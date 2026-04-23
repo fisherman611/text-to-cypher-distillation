@@ -5,8 +5,10 @@ import json
 import pickle
 import re
 import numpy as np
+from functools import lru_cache
 from torch.utils.data import Dataset
 from .distributed_indexed import DistributedMMapIndexedDataset
+from huggingface_hub import snapshot_download
 
 from torch.distributed import get_rank, get_world_size, barrier
 from utils import print_rank
@@ -40,6 +42,63 @@ CLAUSE_PATTERN = re.compile(
 )
 NODE_PATTERN = re.compile(r"\([^()]*\)")
 REL_PATTERN = re.compile(r"<-\[[^\[\]]*\]-|-\[[^\[\]]*\]->|-\[[^\[\]]*\]-")
+
+
+def _ensure_trailing_sep(path):
+    return path if path.endswith(os.sep) else path + os.sep
+
+
+def _parse_hf_path(path):
+    normalized = path[len("hf://"):].strip("/")
+    parts = normalized.split("/")
+    if len(parts) < 2:
+        raise ValueError(
+            f"Invalid Hugging Face path '{path}'. Expected format: "
+            "hf://<owner>/<repo>/<optional/subdir>"
+        )
+    repo_id = "/".join(parts[:2])
+    subdir = "/".join(parts[2:])
+    return repo_id, subdir
+
+
+@lru_cache(maxsize=None)
+def resolve_data_path(path):
+    if path is None:
+        return path
+
+    if not path.startswith("hf://"):
+        return _ensure_trailing_sep(path)
+
+    repo_id, subdir = _parse_hf_path(path)
+    allow_patterns = None
+    if subdir:
+        allow_patterns = [f"{subdir}/*", f"{subdir}/**"]
+
+    token = os.getenv("HF_READ_TOKEN") or os.getenv("HF_TOKEN")
+    last_error = None
+    for repo_type in (None, "dataset"):
+        try:
+            snapshot_dir = snapshot_download(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                allow_patterns=allow_patterns,
+                token=token,
+            )
+            resolved_path = os.path.join(snapshot_dir, subdir) if subdir else snapshot_dir
+            if not os.path.isdir(resolved_path):
+                raise FileNotFoundError(
+                    f"Resolved Hugging Face path does not exist locally: {resolved_path}"
+                )
+            print_rank(f"Using dataset from Hugging Face cache: {resolved_path}")
+            return _ensure_trailing_sep(resolved_path)
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(
+        f"Failed to download dataset path '{path}' from Hugging Face Hub."
+    ) from last_error
+
+
 def _find_response_start(full_text, response_str):
     idx = full_text.find(response_str)
     if idx != -1:
@@ -242,6 +301,7 @@ class LMTrainDataset(Dataset):
         self.max_length = args.max_length
         self.max_prompt_length = args.max_prompt_length
         self.rng_sample = rng_sample
+        path = resolve_data_path(path)
         self.lm_ctx = DistributedMMapIndexedDataset(path, f"{split}", get_rank(), get_world_size())
         self.t_lm_ctx = None
 
