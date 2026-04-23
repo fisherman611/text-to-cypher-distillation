@@ -11,6 +11,7 @@ GPUS_PER_JOB=2
 FILTER=""
 DRY_RUN=0
 CONTINUE_ON_ERROR=0
+W_REL_LOSS_VALUES="0.5,0.6,0.7,0.8,0.9,1.0"
 
 usage() {
   cat <<'EOF'
@@ -21,6 +22,7 @@ Options:
   --gpus <list>                  Comma-separated GPU ids to use. Default: 0,1,2,3,4,5,6,7
   --gpus-per-job <n>             Number of GPUs assigned to each script. Default: 2
   --filter <pattern>             Only run scripts whose path contains this substring.
+  --w-rel-loss-values <list>     Comma-separated sweep values for --w-rel-loss. Default: 0.5,0.6,0.7,0.8,0.9,1.0
   --dry-run                      Print commands without launching them.
   --continue-on-error            Continue with next batch/script even if one fails.
   -h, --help                     Show this message.
@@ -29,6 +31,8 @@ Examples:
   ./running.sh
   ./running.sh --mode sequential --gpus 0,1 --filter fdd
   ./running.sh --mode parallel --gpus 0,1,2,3,4,5,6,7 --gpus-per-job 2
+  ./running.sh --filter kd
+  ./running.sh --filter kd --w-rel-loss-values 0.1,0.3,1.0
 EOF
 }
 
@@ -48,6 +52,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --filter)
       FILTER="$2"
+      shift 2
+      ;;
+    --w-rel-loss-values)
+      W_REL_LOSS_VALUES="$2"
       shift 2
       ;;
     --dry-run)
@@ -103,6 +111,11 @@ if [[ "${#SCRIPTS[@]}" -eq 0 ]]; then
   exit 1
 fi
 
+W_REL_VALUES=()
+if [[ -n "${W_REL_LOSS_VALUES}" ]]; then
+  IFS=',' read -r -a W_REL_VALUES <<< "${W_REL_LOSS_VALUES}"
+fi
+
 chunks=()
 chunk_size="${GPUS_PER_JOB}"
 for ((i=0; i<GPU_COUNT; i+=chunk_size)); do
@@ -121,28 +134,63 @@ launch_job() {
   local script="$1"
   local gpu_chunk="$2"
   local port="$3"
+  local w_rel_value="${4:-}"
   local rel_script="${script#${ROOT_DIR}/}"
-  local cmd="RUN_GPUS=${gpu_chunk} RUN_MASTER_PORT=${port} bash ${script}"
+  local save_suffix=""
+  local extra_args=()
+  local cmd=""
+
+  if [[ -n "${w_rel_value}" ]]; then
+    local safe_w_rel="${w_rel_value//./p}"
+    save_suffix="_wrel${safe_w_rel}"
+    extra_args+=(--w-rel-loss "${w_rel_value}")
+  fi
+
+  cmd="RUN_GPUS=${gpu_chunk} RUN_MASTER_PORT=${port}"
+  if [[ -n "${save_suffix}" ]]; then
+    cmd+=" RUN_SAVE_SUFFIX=${save_suffix}"
+  fi
+  cmd+=" bash ${script}"
+  if [[ "${#extra_args[@]}" -gt 0 ]]; then
+    cmd+=" ${extra_args[*]}"
+  fi
 
   echo "[launch] ${rel_script}"
   echo "         GPUs: ${gpu_chunk} | port: ${port}"
+  if [[ -n "${w_rel_value}" ]]; then
+    echo "         w_rel_loss: ${w_rel_value}"
+  fi
   echo "         cmd : ${cmd}"
 
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     return 0
   fi
 
-  RUN_GPUS="${gpu_chunk}" RUN_MASTER_PORT="${port}" bash "${script}"
+  RUN_GPUS="${gpu_chunk}" RUN_MASTER_PORT="${port}" RUN_SAVE_SUFFIX="${save_suffix}" bash "${script}" "${extra_args[@]}"
 }
 
 failures=0
 base_port=29600
 
+RUN_SPECS=()
+if [[ "${#W_REL_VALUES[@]}" -eq 0 ]]; then
+  for script in "${SCRIPTS[@]}"; do
+    RUN_SPECS+=("${script}|")
+  done
+else
+  for script in "${SCRIPTS[@]}"; do
+    for w_rel in "${W_REL_VALUES[@]}"; do
+      RUN_SPECS+=("${script}|${w_rel}")
+    done
+  done
+fi
+
 if [[ "${MODE}" == "sequential" ]]; then
   gpu_chunk="${chunks[0]}"
-  for idx in "${!SCRIPTS[@]}"; do
+  for idx in "${!RUN_SPECS[@]}"; do
     port=$((base_port + idx))
-    if ! launch_job "${SCRIPTS[$idx]}" "${gpu_chunk}" "${port}"; then
+    IFS='|' read -r script w_rel <<< "${RUN_SPECS[$idx]}"
+    if ! launch_job "${script}" "${gpu_chunk}" "${port}" "${w_rel}"; then
       failures=$((failures + 1))
       if [[ "${CONTINUE_ON_ERROR}" -ne 1 ]]; then
         echo "Stopping after failure." >&2
@@ -152,21 +200,21 @@ if [[ "${MODE}" == "sequential" ]]; then
   done
 else
   batch_size="${#chunks[@]}"
-  for ((start=0; start<${#SCRIPTS[@]}; start+=batch_size)); do
+  for ((start=0; start<${#RUN_SPECS[@]}; start+=batch_size)); do
     pids=()
-    batch_scripts=("${SCRIPTS[@]:start:batch_size}")
-    for offset in "${!batch_scripts[@]}"; do
-      script="${batch_scripts[$offset]}"
+    batch_specs=("${RUN_SPECS[@]:start:batch_size}")
+    for offset in "${!batch_specs[@]}"; do
+      IFS='|' read -r script w_rel <<< "${batch_specs[$offset]}"
       gpu_chunk="${chunks[$offset]}"
       port=$((base_port + start + offset))
 
       if [[ "${DRY_RUN}" -eq 1 ]]; then
-        launch_job "${script}" "${gpu_chunk}" "${port}"
+        launch_job "${script}" "${gpu_chunk}" "${port}" "${w_rel}"
         continue
       fi
 
       (
-        launch_job "${script}" "${gpu_chunk}" "${port}"
+        launch_job "${script}" "${gpu_chunk}" "${port}" "${w_rel}"
       ) &
       pids+=("$!")
     done

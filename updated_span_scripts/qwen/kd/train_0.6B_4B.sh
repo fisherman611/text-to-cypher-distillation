@@ -40,6 +40,7 @@ EPOCHS=5
 MAX_LENGTH=892
 # runtime
 SAVE_PATH="${BASE_PATH}/results/qwen3/updated_span_0.6B_4B_Cypherbench_fkl"
+SAVE_PATH="${SAVE_PATH}${RUN_SAVE_SUFFIX:-}"
 # seed
 SEED=42
 

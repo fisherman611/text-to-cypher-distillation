@@ -38,6 +38,7 @@ MAX_LENGTH=892
 # runtime
 # SAVE_PATH="${BASE_PATH}/results/qwen3/updated_span_0.6B_4B_Cypherbench_fdd_sfkl"   #default kd_ratio 0.5
 SAVE_PATH="${BASE_PATH}/results/qwen3/updated_span_0.6B_4B_Cypherbench_fdd_sfkl_kd_ratio_0.4"
+SAVE_PATH="${SAVE_PATH}${RUN_SAVE_SUFFIX:-}"
 # seed
 SEED=42
 
