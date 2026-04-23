@@ -11,6 +11,7 @@ from datetime import timedelta
 import deepspeed
 from accelerate import load_checkpoint_and_dispatch, init_empty_weights
 from peft import get_peft_model, LoraConfig, TaskType, PeftModel
+from huggingface_hub import snapshot_download
 
 
 from transformers import (
@@ -116,6 +117,38 @@ def initialize(args):
         os.makedirs(args.save, exist_ok=True)
 
 
+def resolve_hf_path(path):
+    if path is None or not path.startswith("hf://"):
+        return path
+
+    normalized = path[len("hf://"):].strip("/")
+    parts = normalized.split("/")
+    if len(parts) < 2:
+        raise ValueError(
+            f"Invalid Hugging Face path '{path}'. Expected format: "
+            "hf://<owner>/<repo>/<optional/subdir>"
+        )
+
+    repo_id = "/".join(parts[:2])
+    subdir = "/".join(parts[2:])
+    allow_patterns = None
+    if subdir:
+        allow_patterns = [f"{subdir}/*", f"{subdir}/**"]
+
+    token = os.getenv("HF_READ_TOKEN") or os.getenv("HF_TOKEN")
+    snapshot_dir = snapshot_download(
+        repo_id=repo_id,
+        allow_patterns=allow_patterns,
+        token=token,
+    )
+    resolved_path = os.path.join(snapshot_dir, subdir) if subdir else snapshot_dir
+    if not os.path.isdir(resolved_path):
+        raise FileNotFoundError(
+            f"Resolved Hugging Face path does not exist locally: {resolved_path}"
+        )
+    return resolved_path
+
+
 # Load and save model
 def get_model(args, device):
     config = AutoConfig.from_pretrained(args.model_path)
@@ -138,8 +171,9 @@ def get_model(args, device):
             if args.peft == "lora":
                 model.enable_input_require_grads()
                 if args.peft_path is not None:
+                    peft_path = resolve_hf_path(args.peft_path)
                     if args.do_train:
-                        _model = PeftModel.from_pretrained(model, args.peft_path)
+                        _model = PeftModel.from_pretrained(model, peft_path)
                         state_dict = dict(_model.state_dict().items())
                         peft_config = LoraConfig(
                             task_type=TaskType.CAUSAL_LM, inference_mode=(not args.do_train), r=args.peft_lora_r, lora_alpha=args.peft_lora_alpha, lora_dropout=args.peft_lora_dropout
@@ -150,7 +184,7 @@ def get_model(args, device):
                         del _model
                         del state_dict
                     else:
-                        model = PeftModel.from_pretrained(model, args.peft_path)
+                        model = PeftModel.from_pretrained(model, peft_path)
                 else:
                     peft_config = LoraConfig(
                         task_type=TaskType.CAUSAL_LM, 

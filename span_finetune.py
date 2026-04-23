@@ -35,7 +35,7 @@ from utils import print_rank, get_rank
 from utils import save_rank
 from utils import all_gather
 from utils import load_parallel, save_parallel
-from utils import get_tokenizer, get_model
+from utils import get_tokenizer, get_model, resolve_hf_path
 
 from distillm import forward_kl, reverse_kl, js_distance, tv_distance
 from distillm import skewed_forward_kl, skewed_reverse_kl, csd
@@ -61,7 +61,8 @@ def get_teacher_model(args, device):
             model = model.half()
         
         if args.teacher_peft_path is not None:
-            model = PeftModel.from_pretrained(model, args.teacher_peft_path)
+            teacher_peft_path = resolve_hf_path(args.teacher_peft_path)
+            model = PeftModel.from_pretrained(model, teacher_peft_path)
             model = model.merge_and_unload()
             print("merge_and_unload")
 
