@@ -1,0 +1,38 @@
+[project]
+name = "text-to-cypher-distillation"
+version = "0.1.0"
+description = "Training and evaluation code for text-to-cypher distillation."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "accelerate",
+  "datasets",
+  "deepspeed",
+  "huggingface-hub",
+  "neo4j",
+  "nltk",
+  "numerize",
+  "numpy",
+  "peft",
+  "protobuf",
+  "rich",
+  "rouge-score",
+  "sentencepiece",
+  "torch==2.8.0+cu128",
+  "torchtyping",
+  "tqdm",
+  "transformers==4.42.4",
+]
+
+[project.optional-dependencies]
+inference = [
+  "vllm==0.5.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
