@@ -24,11 +24,6 @@ dependencies = [
   "transformers==4.42.4",
 ]
 
-[project.optional-dependencies]
-inference = [
-  "vllm==0.5.0",
-]
-
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
