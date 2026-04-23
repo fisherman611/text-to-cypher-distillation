@@ -1,4 +1,5 @@
 from typing import Dict
+from functools import lru_cache
 import numpy as np
 import os
 import time
@@ -19,6 +20,12 @@ from transformers import (
     AutoTokenizer,
     AutoConfig,
 )
+
+
+HF_PATH_ALIASES = {
+    "results/qwen3/sft_4B/e5-bs2-lr1e-05-G8-N2-NN1-lora-32-64-0.1/1065": "hf://fisherman611/text-to-cypher-models/e5-bs2-lr1e-05-G8-N2-NN1-lora-32-64-0.1/1065",
+    "./results/qwen3/sft_4B/e5-bs2-lr1e-05-G8-N2-NN1-lora-32-64-0.1/1065": "hf://fisherman611/text-to-cypher-models/e5-bs2-lr1e-05-G8-N2-NN1-lora-32-64-0.1/1065",
+}
 
 
 # Logging
@@ -117,8 +124,18 @@ def initialize(args):
         os.makedirs(args.save, exist_ok=True)
 
 
+@lru_cache(maxsize=None)
 def resolve_hf_path(path):
-    if path is None or not path.startswith("hf://"):
+    if path is None:
+        return path
+
+    normalized_path = path.replace("\\", "/").rstrip("/")
+    if normalized_path in HF_PATH_ALIASES and not os.path.exists(path):
+        hf_path = HF_PATH_ALIASES[normalized_path]
+        print_rank(f"Local model path '{path}' not found. Falling back to '{hf_path}'.")
+        path = hf_path
+
+    if not path.startswith("hf://"):
         return path
 
     normalized = path[len("hf://"):].strip("/")
