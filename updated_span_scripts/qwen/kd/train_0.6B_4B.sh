@@ -1,5 +1,8 @@
 #! /bin/bash
 
+# Legacy default KD script.
+# This file keeps the original name for compatibility and runs the FKL variant.
+
 GPUS=(0 1)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 
