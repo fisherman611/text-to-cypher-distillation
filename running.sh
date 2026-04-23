@@ -178,21 +178,6 @@ if [[ -n "${FDD_WEIGHT_VALUES}" ]]; then
   IFS=',' read -r -a FDD_WEIGHT_SWEEP <<< "${FDD_WEIGHT_VALUES}"
 fi
 
-W_ATTN_SWEEP=("")
-if [[ -n "${W_ATTN_LOSS_VALUES}" ]]; then
-  IFS=',' read -r -a W_ATTN_SWEEP <<< "${W_ATTN_LOSS_VALUES}"
-fi
-
-W_QUERY_SWEEP=("")
-if [[ -n "${W_QUERY_LOSS_VALUES}" ]]; then
-  IFS=',' read -r -a W_QUERY_SWEEP <<< "${W_QUERY_LOSS_VALUES}"
-fi
-
-W_RELATIONAL_SWEEP=("")
-if [[ -n "${W_RELATIONAL_LOSS_VALUES}" ]]; then
-  IFS=',' read -r -a W_RELATIONAL_SWEEP <<< "${W_RELATIONAL_LOSS_VALUES}"
-fi
-
 chunks=()
 chunk_size="${GPUS_PER_JOB}"
 for ((i=0; i<GPU_COUNT; i+=chunk_size)); do
