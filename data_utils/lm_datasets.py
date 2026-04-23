@@ -43,6 +43,13 @@ CLAUSE_PATTERN = re.compile(
 NODE_PATTERN = re.compile(r"\([^()]*\)")
 REL_PATTERN = re.compile(r"<-\[[^\[\]]*\]-|-\[[^\[\]]*\]->|-\[[^\[\]]*\]-")
 
+HF_DATA_PATH_ALIASES = {
+    "./processed_data/benchmarks/Cypherbench/qwen": "hf://fisherman611/text_to_cypher_distillation/benchmarks/Cypherbench/qwen",
+    "./processed_data/benchmarks/Cypherbench/qwen/": "hf://fisherman611/text_to_cypher_distillation/benchmarks/Cypherbench/qwen",
+    "processed_data/benchmarks/Cypherbench/qwen": "hf://fisherman611/text_to_cypher_distillation/benchmarks/Cypherbench/qwen",
+    "processed_data/benchmarks/Cypherbench/qwen/": "hf://fisherman611/text_to_cypher_distillation/benchmarks/Cypherbench/qwen",
+}
+
 
 def _ensure_trailing_sep(path):
     return path if path.endswith(os.sep) else path + os.sep
@@ -65,6 +72,12 @@ def _parse_hf_path(path):
 def resolve_data_path(path):
     if path is None:
         return path
+
+    normalized_path = path.replace("\\", "/").rstrip("/")
+    if normalized_path in HF_DATA_PATH_ALIASES and not os.path.exists(path):
+        hf_path = HF_DATA_PATH_ALIASES[normalized_path]
+        print_rank(f"Local dataset path '{path}' not found. Falling back to '{hf_path}'.")
+        path = hf_path
 
     if not path.startswith("hf://"):
         return _ensure_trailing_sep(path)

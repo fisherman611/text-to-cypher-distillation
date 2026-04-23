@@ -87,8 +87,9 @@ class DistributedMMapIndexedDataset(torch.utils.data.Dataset):
                                           offset=offset + self._sizes.nbytes + self._pointers.nbytes)
 
         def __del__(self):
-            self._bin_buffer_mmap._mmap.close()
-            del self._bin_buffer_mmap
+            if hasattr(self, "_bin_buffer_mmap"):
+                self._bin_buffer_mmap._mmap.close()
+                del self._bin_buffer_mmap
 
         @property
         def dtype(self):
