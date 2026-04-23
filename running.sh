@@ -11,6 +11,8 @@ GPUS_PER_JOB=2
 FILTER=""
 DRY_RUN=0
 CONTINUE_ON_ERROR=0
+MAX_RETRIES=1
+LOG_DIR=""
 W_REL_LOSS_VALUES="0.5,0.6,0.7,0.8,0.9,1.0"
 KD_RATIO_VALUES="0.7"
 FDD_WEIGHT_VALUES="0.1,0.2,0.3,0.4"
@@ -24,6 +26,8 @@ Options:
   --gpus <list>                  Comma-separated GPU ids to use. Default: 0,1,2,3,4,5,6,7
   --gpus-per-job <n>             Number of GPUs assigned to each script. Default: 2
   --filter <pattern>             Only run scripts whose path contains this substring.
+  --max-retries <n>              Retry a failed job up to n times in parallel mode. Default: 1
+  --log-dir <path>               Directory for run logs. Default: ./run_logs/<timestamp>
   --w-rel-loss-values <list>     Comma-separated sweep values for --w-rel-loss. Default: 0.5,0.6,0.7,0.8,0.9,1.0
   --kd-ratio-values <list>       Comma-separated sweep values for --kd-ratio.
   --fdd-weight-values <list>     Comma-separated sweep values for --fdd-weight.
@@ -39,6 +43,8 @@ Examples:
   ./running.sh
   ./running.sh --mode sequential --gpus 0,1 --filter fdd
   ./running.sh --mode parallel --gpus 0,1,2,3,4,5,6,7 --gpus-per-job 2
+  ./running.sh --mode parallel --gpus 0,1,2,3,4,5,6,7 --gpus-per-job 2 --max-retries 2
+  ./running.sh --mode parallel --gpus 0,1,2,3,4,5,6,7 --gpus-per-job 2 --log-dir ./run_logs/qwen_sweep
   ./running.sh --filter kd
   ./running.sh --filter kd --w-rel-loss-values 0.1,0.3,1.0
   ./running.sh --filter fdd --w-rel-loss-values 0.5,1.0 --fdd-weight-values 0.1,0.2 --kd-ratio-values 0.4,0.5
@@ -61,6 +67,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --filter)
       FILTER="$2"
+      shift 2
+      ;;
+    --max-retries)
+      MAX_RETRIES="$2"
+      shift 2
+      ;;
+    --log-dir)
+      LOG_DIR="$2"
       shift 2
       ;;
     --w-rel-loss-values)
@@ -104,6 +118,27 @@ if ! [[ "${GPUS_PER_JOB}" =~ ^[0-9]+$ ]] || [[ "${GPUS_PER_JOB}" -le 0 ]]; then
   echo "--gpus-per-job must be a positive integer" >&2
   exit 1
 fi
+
+if ! [[ "${MAX_RETRIES}" =~ ^[0-9]+$ ]]; then
+  echo "--max-retries must be a non-negative integer" >&2
+  exit 1
+fi
+
+timestamp="$(date +%Y%m%d_%H%M%S)"
+if [[ -z "${LOG_DIR}" ]]; then
+  LOG_DIR="${ROOT_DIR}/run_logs/${timestamp}"
+fi
+mkdir -p "${LOG_DIR}"
+
+RUN_LOG="${LOG_DIR}/run.log"
+SUCCESS_LOG="${LOG_DIR}/success.log"
+FAIL_LOG="${LOG_DIR}/failed.log"
+RETRY_LOG="${LOG_DIR}/retry.log"
+
+: > "${RUN_LOG}"
+: > "${SUCCESS_LOG}"
+: > "${FAIL_LOG}"
+: > "${RETRY_LOG}"
 
 IFS=',' read -r -a ALL_GPUS <<< "${GPU_LIST}"
 GPU_COUNT="${#ALL_GPUS[@]}"
@@ -246,8 +281,28 @@ launch_job() {
   RUN_GPUS="${gpu_chunk}" RUN_MASTER_PORT="${port}" RUN_SAVE_SUFFIX="${save_suffix}" bash "${script}" "${extra_args[@]}"
 }
 
+append_log() {
+  local log_file="$1"
+  local message="$2"
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${message}" >> "${log_file}"
+}
+
+describe_run() {
+  local run_idx="$1"
+  local script spec rel_script
+
+  IFS='|' read -r script spec <<< "${RUN_SPECS[$run_idx]}"
+  rel_script="${script#${ROOT_DIR}/}"
+  if [[ -n "${spec}" ]]; then
+    printf '%s | %s' "${rel_script}" "${spec}"
+  else
+    printf '%s' "${rel_script}"
+  fi
+}
+
 failures=0
 base_port=29600
+launch_counter=0
 
 RUN_SPECS=()
 for script in "${SCRIPTS[@]}"; do
@@ -273,64 +328,183 @@ for script in "${SCRIPTS[@]}"; do
   done
 done
 
+append_log "${RUN_LOG}" "Started run: mode=${MODE}, gpus=${GPU_LIST}, gpus_per_job=${GPUS_PER_JOB}, max_retries=${MAX_RETRIES}, continue_on_error=${CONTINUE_ON_ERROR}, filter=${FILTER:-<none>}"
+append_log "${RUN_LOG}" "Logs directory: ${LOG_DIR}"
+append_log "${RUN_LOG}" "Total scheduled runs: ${#RUN_SPECS[@]}"
+
 if [[ "${MODE}" == "sequential" ]]; then
   gpu_chunk="${chunks[0]}"
   for idx in "${!RUN_SPECS[@]}"; do
-    port=$((base_port + idx))
+    port=$((base_port + launch_counter))
+    launch_counter=$((launch_counter + 1))
     IFS='|' read -r script spec <<< "${RUN_SPECS[$idx]}"
+    run_desc="$(describe_run "${idx}")"
+    append_log "${RUN_LOG}" "DISPATCH sequential run=$((idx + 1)) gpus=${gpu_chunk} port=${port} ${run_desc}"
     if ! launch_job "${script}" "${gpu_chunk}" "${port}" "${spec}"; then
       failures=$((failures + 1))
+      append_log "${RUN_LOG}" "FAIL sequential run=$((idx + 1)) port=${port} ${run_desc}"
+      append_log "${FAIL_LOG}" "run=$((idx + 1)) port=${port} ${run_desc}"
       if [[ "${CONTINUE_ON_ERROR}" -ne 1 ]]; then
         echo "Stopping after failure." >&2
+        append_log "${RUN_LOG}" "STOP sequential mode after first failure."
         exit 1
       fi
+    else
+      append_log "${RUN_LOG}" "DONE sequential run=$((idx + 1)) port=${port} ${run_desc}"
+      append_log "${SUCCESS_LOG}" "run=$((idx + 1)) port=${port} ${run_desc}"
     fi
   done
 else
-  batch_size="${#chunks[@]}"
-  for ((start=0; start<${#RUN_SPECS[@]}; start+=batch_size)); do
-    pids=()
-    batch_specs=("${RUN_SPECS[@]:start:batch_size}")
-    for offset in "${!batch_specs[@]}"; do
-      IFS='|' read -r script spec <<< "${batch_specs[$offset]}"
-      gpu_chunk="${chunks[$offset]}"
-      port=$((base_port + start + offset))
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    for idx in "${!RUN_SPECS[@]}"; do
+      IFS='|' read -r script spec <<< "${RUN_SPECS[$idx]}"
+      chunk_idx=$((idx % ${#chunks[@]}))
+      gpu_chunk="${chunks[$chunk_idx]}"
+      port=$((base_port + launch_counter))
+      launch_counter=$((launch_counter + 1))
+      launch_job "${script}" "${gpu_chunk}" "${port}" "${spec}"
+    done
+  else
+    declare -a JOB_ATTEMPTS=()
+    declare -a PENDING_RUNS=()
+    declare -a ACTIVE_PIDS=()
+    declare -a CHUNK_BUSY=()
+    declare -A PID_TO_RUN_IDX=()
+    declare -A PID_TO_CHUNK_IDX=()
+    declare -A PID_TO_ATTEMPT=()
 
-      if [[ "${DRY_RUN}" -eq 1 ]]; then
-        launch_job "${script}" "${gpu_chunk}" "${port}" "${spec}"
-        continue
-      fi
+    for idx in "${!RUN_SPECS[@]}"; do
+      JOB_ATTEMPTS[idx]=0
+      PENDING_RUNS+=("${idx}")
+    done
 
+    for idx in "${!chunks[@]}"; do
+      CHUNK_BUSY[idx]=0
+    done
+
+    queue_head=0
+    stop_scheduling=0
+
+    start_job_on_chunk() {
+      local run_idx="$1"
+      local chunk_idx="$2"
+      local attempt=$((JOB_ATTEMPTS[run_idx] + 1))
+      local port=$((base_port + launch_counter))
+      local script spec gpu_chunk pid run_desc
+
+      JOB_ATTEMPTS[run_idx]="${attempt}"
+      launch_counter=$((launch_counter + 1))
+      IFS='|' read -r script spec <<< "${RUN_SPECS[$run_idx]}"
+      gpu_chunk="${chunks[$chunk_idx]}"
+      run_desc="$(describe_run "${run_idx}")"
+
+      echo "[queue] dispatch run #$((run_idx + 1)) on GPUs ${gpu_chunk} (attempt ${attempt}/$((MAX_RETRIES + 1)))"
+      append_log "${RUN_LOG}" "DISPATCH parallel run=$((run_idx + 1)) attempt=${attempt} gpus=${gpu_chunk} port=${port} ${run_desc}"
       (
         launch_job "${script}" "${gpu_chunk}" "${port}" "${spec}"
       ) &
-      pids+=("$!")
+      pid="$!"
+
+      ACTIVE_PIDS+=("${pid}")
+      CHUNK_BUSY[chunk_idx]=1
+      PID_TO_RUN_IDX["${pid}"]="${run_idx}"
+      PID_TO_CHUNK_IDX["${pid}"]="${chunk_idx}"
+      PID_TO_ATTEMPT["${pid}"]="${attempt}"
+    }
+
+    remove_active_pid() {
+      local target_pid="$1"
+      local next_active=()
+      local active_pid
+      for active_pid in "${ACTIVE_PIDS[@]}"; do
+        if [[ "${active_pid}" != "${target_pid}" ]]; then
+          next_active+=("${active_pid}")
+        fi
+      done
+      ACTIVE_PIDS=("${next_active[@]}")
+    }
+
+    schedule_ready_jobs() {
+      local chunk_idx
+      while [[ "${stop_scheduling}" -eq 0 ]]; do
+        chunk_idx=""
+        for idx in "${!chunks[@]}"; do
+          if [[ "${CHUNK_BUSY[idx]}" -eq 0 ]]; then
+            chunk_idx="${idx}"
+            break
+          fi
+        done
+
+        if [[ -z "${chunk_idx}" || "${queue_head}" -ge "${#PENDING_RUNS[@]}" ]]; then
+          break
+        fi
+
+        start_job_on_chunk "${PENDING_RUNS[$queue_head]}" "${chunk_idx}"
+        queue_head=$((queue_head + 1))
+      done
+    }
+
+    schedule_ready_jobs
+
+    while [[ "${#ACTIVE_PIDS[@]}" -gt 0 ]]; do
+      finished_pid=""
+      if wait -n -p finished_pid; then
+        wait_status=0
+      else
+        wait_status=$?
+      fi
+
+      run_idx="${PID_TO_RUN_IDX[${finished_pid}]}"
+      chunk_idx="${PID_TO_CHUNK_IDX[${finished_pid}]}"
+      attempt="${PID_TO_ATTEMPT[${finished_pid}]}"
+      CHUNK_BUSY[chunk_idx]=0
+      remove_active_pid "${finished_pid}"
+      unset "PID_TO_RUN_IDX[$finished_pid]"
+      unset "PID_TO_CHUNK_IDX[$finished_pid]"
+      unset "PID_TO_ATTEMPT[$finished_pid]"
+
+      IFS='|' read -r script spec <<< "${RUN_SPECS[$run_idx]}"
+      rel_script="${script#${ROOT_DIR}/}"
+      run_desc="$(describe_run "${run_idx}")"
+
+      if [[ "${wait_status}" -eq 0 ]]; then
+        echo "[done] ${rel_script} succeeded on attempt ${attempt}"
+        append_log "${RUN_LOG}" "DONE parallel run=$((run_idx + 1)) attempt=${attempt} gpus=${chunks[$chunk_idx]} ${run_desc}"
+        append_log "${SUCCESS_LOG}" "run=$((run_idx + 1)) attempt=${attempt} gpus=${chunks[$chunk_idx]} ${run_desc}"
+      else
+        echo "[fail] ${rel_script} failed on attempt ${attempt} with exit code ${wait_status}" >&2
+        append_log "${RUN_LOG}" "FAIL parallel run=$((run_idx + 1)) attempt=${attempt} exit_code=${wait_status} gpus=${chunks[$chunk_idx]} ${run_desc}"
+        if [[ "${attempt}" -le "${MAX_RETRIES}" ]]; then
+          echo "[retry] Re-queueing ${rel_script} for another attempt." >&2
+          append_log "${RETRY_LOG}" "run=$((run_idx + 1)) next_attempt=$((attempt + 1)) previous_exit_code=${wait_status} ${run_desc}"
+          PENDING_RUNS+=("${run_idx}")
+        else
+          failures=$((failures + 1))
+          append_log "${FAIL_LOG}" "run=$((run_idx + 1)) attempt=${attempt} exit_code=${wait_status} ${run_desc}"
+          if [[ "${CONTINUE_ON_ERROR}" -ne 1 ]]; then
+            stop_scheduling=1
+            echo "A job failed after ${attempt} attempt(s). Waiting for running jobs to finish before stopping." >&2
+            append_log "${RUN_LOG}" "STOP parallel scheduling after exhausted retries for run=$((run_idx + 1))."
+          fi
+        fi
+      fi
+
+      schedule_ready_jobs
     done
 
-    if [[ "${DRY_RUN}" -eq 1 ]]; then
-      continue
+    if [[ "${stop_scheduling}" -eq 1 && "${queue_head}" -lt "${#PENDING_RUNS[@]}" ]]; then
+      skipped_jobs=$(( ${#PENDING_RUNS[@]} - queue_head ))
+      echo "Stopped with ${skipped_jobs} queued job(s) not started." >&2
+      append_log "${RUN_LOG}" "Stopped with ${skipped_jobs} queued job(s) not started."
     fi
-
-    batch_failed=0
-    for pid in "${pids[@]}"; do
-      if ! wait "${pid}"; then
-        batch_failed=1
-      fi
-    done
-
-    if [[ "${batch_failed}" -eq 1 ]]; then
-      failures=$((failures + 1))
-      if [[ "${CONTINUE_ON_ERROR}" -ne 1 ]]; then
-        echo "A batch failed. Stopping." >&2
-        exit 1
-      fi
-    fi
-  done
+  fi
 fi
 
 if [[ "${failures}" -gt 0 ]]; then
-  echo "Finished with ${failures} failed run group(s)." >&2
+  append_log "${RUN_LOG}" "Finished with ${failures} failed job(s)."
+  echo "Finished with ${failures} failed job(s)." >&2
   exit 1
 fi
 
+append_log "${RUN_LOG}" "All requested scripts finished successfully."
 echo "All requested scripts finished successfully."
