@@ -21,6 +21,9 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
 
 # model
 BASE_PATH=.
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
+SCRIPT_GROUP="$(basename "$(dirname "${BASH_SOURCE[0]}")")"
+SAVE_TAG="${SCRIPT_GROUP}_${SCRIPT_NAME}"
 CKPT_NAME="qwen3-0.6B"
 CKPT="Qwen/Qwen3-0.6B"
 TEACHER_CKPT_NAME="qwen3-4B"
@@ -36,14 +39,12 @@ EPOCHS=5
 # length
 MAX_LENGTH=892
 # runtime
-# SAVE_PATH="${BASE_PATH}/results/qwen3/updated_span_0.6B_4B_Cypherbench_fdd_sfkl"   #default kd_ratio 0.5
-SAVE_PATH="${BASE_PATH}/results/qwen3/updated_span_0.6B_4B_Cypherbench_fdd_sfkl_kd_ratio_0.4"
-SAVE_PATH="${SAVE_PATH}${RUN_SAVE_SUFFIX:-}"
+SAVE_PATH="${BASE_PATH}/results/qwen3/${SAVE_TAG}"
 # seed
 SEED=42
 
 # grounding loss weights
-W_REL_LOSS=1
+W_REL_LOSS=0.9
 GROUNDING_LOSS_CAP=1000000000
 GROUNDING_WARMUP_STEPS=1
 
@@ -73,11 +74,12 @@ OPTS+=" --lr-decay-style cosine"
 OPTS+=" --weight-decay 1e-2"
 OPTS+=" --clip-grad 1.0"
 OPTS+=" --epochs ${EPOCHS}"
-OPTS+=" --kd-ratio 0.4"
+OPTS+=" --kd-ratio 0.5"
 # grounding loss
 OPTS+=" --w-rel-loss ${W_REL_LOSS}"
 OPTS+=" --grounding-loss-cap ${GROUNDING_LOSS_CAP}"
 OPTS+=" --grounding-warmup-steps ${GROUNDING_WARMUP_STEPS}"
+OPTS+=" --fdd-weight 0.2"
 # length
 OPTS+=" --max-length ${MAX_LENGTH}"
 OPTS+=" --max-prompt-length 797"
@@ -96,7 +98,7 @@ OPTS+=" --seed ${SEED}"
 OPTS+=" --deepspeed"
 OPTS+=" --deepspeed_config ${BASE_PATH}/configs/deepspeed/ds_config_fp16.json"
 # type
-OPTS+=" --type sfkl"
+OPTS+=" --type srkl"
 # gen
 OPTS+=" --do-sample"
 OPTS+=" --top-k 0"

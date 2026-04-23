@@ -20,6 +20,9 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
                   --master_port $MASTER_PORT"
 
 BASE_PATH=.
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
+SCRIPT_GROUP="$(basename "$(dirname "${BASH_SOURCE[0]}")")"
+SAVE_TAG="${SCRIPT_GROUP}_${SCRIPT_NAME}"
 CKPT_NAME="qwen3-0.6B"
 CKPT="Qwen/Qwen3-0.6B"
 TEACHER_CKPT_NAME="qwen3-4B"
@@ -31,10 +34,9 @@ GRAD_ACC=8
 EVAL_BATCH_SIZE=8
 EPOCHS=5
 MAX_LENGTH=892
-SAVE_PATH="${BASE_PATH}/results/qwen3/updated_span_0.6B_4B_Cypherbench_csd"
-SAVE_PATH="${SAVE_PATH}${RUN_SAVE_SUFFIX:-}"
+SAVE_PATH="${BASE_PATH}/results/qwen3/${SAVE_TAG}"
 SEED=42
-W_REL_LOSS=1
+W_REL_LOSS=0.8
 GROUNDING_LOSS_CAP=1000000000
 GROUNDING_WARMUP_STEPS=1
 
@@ -77,7 +79,7 @@ OPTS+=" --save ${SAVE_PATH}"
 OPTS+=" --seed ${SEED}"
 OPTS+=" --deepspeed"
 OPTS+=" --deepspeed_config ${BASE_PATH}/configs/deepspeed/ds_config_fp16.json"
-OPTS+=" --type csd"
+OPTS+=" --type adaptive-srkl"
 OPTS+=" --do-sample"
 OPTS+=" --top-k 0"
 OPTS+=" --top-p 0.95"
