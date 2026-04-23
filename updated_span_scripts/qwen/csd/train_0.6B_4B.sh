@@ -1,10 +1,14 @@
 #! /bin/bash
 
-GPUS=(0 1)
+if [[ -n "${RUN_GPUS:-}" ]]; then
+  IFS=', ' read -r -a GPUS <<< "${RUN_GPUS}"
+else
+  GPUS=(0 1)
+fi
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 
 MASTER_ADDR=localhost
-MASTER_PORT=66$(($RANDOM%90+10))
+MASTER_PORT=${RUN_MASTER_PORT:-66$(($RANDOM%90+10))}
 NNODES=1
 NODE_RANK=0
 GPUS_PER_NODE=${#GPUS[@]}
