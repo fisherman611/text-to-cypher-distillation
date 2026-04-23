@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_ROOT="${ROOT_DIR}/updated_span_scripts/qwen"
 
 MODE="parallel"
-GPU_LIST="0,1"
+GPU_LIST="0,1,2,3,4,5,6,7,8"
 GPUS_PER_JOB=2
 FILTER=""
 MAX_RETRIES=0
