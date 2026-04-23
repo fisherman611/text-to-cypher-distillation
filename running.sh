@@ -31,10 +31,6 @@ Options:
   --w-rel-loss-values <list>     Comma-separated sweep values for --w-rel-loss. Default: 0.5,0.6,0.7,0.8,0.9,1.0
   --kd-ratio-values <list>       Comma-separated sweep values for --kd-ratio.
   --fdd-weight-values <list>     Comma-separated sweep values for --fdd-weight.
-  --w-attn-loss-values <list>    Comma-separated sweep values for --w-attn-loss.
-  --w-query-loss-values <list>   Comma-separated sweep values for --w-query-loss.
-  --w-relational-loss-values <list>
-                                 Comma-separated sweep values for --w-relational-loss.
   --dry-run                      Print commands without launching them.
   --continue-on-error            Continue with next batch/script even if one fails.
   -h, --help                     Show this message.
@@ -294,20 +290,11 @@ for script in "${SCRIPTS[@]}"; do
   for w_rel in "${W_REL_VALUES[@]}"; do
     for kd_ratio in "${KD_RATIO_SWEEP[@]}"; do
       for fdd_weight in "${FDD_WEIGHT_SWEEP[@]}"; do
-        for w_attn in "${W_ATTN_SWEEP[@]}"; do
-          for w_query in "${W_QUERY_SWEEP[@]}"; do
-            for w_relational in "${W_RELATIONAL_SWEEP[@]}"; do
-              spec=""
-              [[ -n "${w_rel}" ]] && spec+="w_rel=${w_rel};"
-              [[ -n "${kd_ratio}" ]] && spec+="kd_ratio=${kd_ratio};"
-              [[ -n "${fdd_weight}" ]] && spec+="fdd_weight=${fdd_weight};"
-              [[ -n "${w_attn}" ]] && spec+="w_attn=${w_attn};"
-              [[ -n "${w_query}" ]] && spec+="w_query=${w_query};"
-              [[ -n "${w_relational}" ]] && spec+="w_relational=${w_relational};"
-              RUN_SPECS+=("${script}|${spec}")
-            done
-          done
-        done
+        spec=""
+        [[ -n "${w_rel}" ]] && spec+="w_rel=${w_rel};"
+        [[ -n "${kd_ratio}" ]] && spec+="kd_ratio=${kd_ratio};"
+        [[ -n "${fdd_weight}" ]] && spec+="fdd_weight=${fdd_weight};"
+        RUN_SPECS+=("${script}|${spec}")
       done
     done
   done
