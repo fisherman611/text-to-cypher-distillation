@@ -163,7 +163,7 @@ if [[ "${#SCRIPTS[@]}" -eq 0 ]]; then
   exit 1
 fi
 
-W_REL_VALUES=()
+W_REL_VALUES=("")
 if [[ -n "${W_REL_LOSS_VALUES}" ]]; then
   IFS=',' read -r -a W_REL_VALUES <<< "${W_REL_LOSS_VALUES}"
 fi
@@ -312,6 +312,12 @@ for script in "${SCRIPTS[@]}"; do
     done
   done
 done
+
+if [[ "${#RUN_SPECS[@]}" -eq 0 ]]; then
+  echo "No run specs were generated. Check your sweep values and filters." >&2
+  append_log "${RUN_LOG}" "No run specs were generated. Exiting with error."
+  exit 1
+fi
 
 append_log "${RUN_LOG}" "Started run: mode=${MODE}, gpus=${GPU_LIST}, gpus_per_job=${GPUS_PER_JOB}, max_retries=${MAX_RETRIES}, continue_on_error=${CONTINUE_ON_ERROR}, filter=${FILTER:-<none>}"
 append_log "${RUN_LOG}" "Logs directory: ${LOG_DIR}"
