@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional
 from tqdm.auto import tqdm
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from huggingface_hub import hf_hub_download, list_repo_files
 
 from src.utils import read_json_file, build_messages
 from src.llm_services import parse_json_from_string, parse_llm_response
@@ -43,7 +44,16 @@ def parse_args():
         "--model", default="Qwen/Qwen3-0.6B", help="Model name or path"
     )
     parser.add_argument(
-        "--ckpt_path", type=str, default=None, help="Path to LoRA checkpoint or fine-tuned checkpoint"
+        "--ckpt_path",
+        type=str,
+        default=None,
+        help="Local path or Hugging Face repo id of LoRA/full fine-tuned checkpoint",
+    )
+    parser.add_argument(
+        "--ckpt_revision",
+        type=str,
+        default=None,
+        help="Optional Hugging Face revision (branch/tag/commit) for --ckpt_path",
     )
     parser.add_argument(
         "--device",
@@ -72,16 +82,38 @@ def parse_args():
     return parser.parse_args()
 
 
-def init_model(model_name_or_path, ckpt_path=None, device=None):
+def _local_or_hf_has_file(source: str, filename: str, revision: Optional[str] = None) -> bool:
+    if os.path.isdir(source):
+        return os.path.exists(os.path.join(source, filename))
+
+    try:
+        repo_files = list_repo_files(repo_id=source, revision=revision)
+        return filename in repo_files
+    except Exception:
+        return False
+
+
+def _resolve_ckpt_file(source: str, filename: str, revision: Optional[str] = None) -> Optional[str]:
+    if os.path.isdir(source):
+        candidate = os.path.join(source, filename)
+        return candidate if os.path.exists(candidate) else None
+
+    try:
+        return hf_hub_download(repo_id=source, filename=filename, revision=revision)
+    except Exception:
+        return None
+
+
+def init_model(model_name_or_path, ckpt_path=None, ckpt_revision=None, device=None):
     if device is None or device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     is_peft = False
     if ckpt_path:
-        if os.path.exists(os.path.join(ckpt_path, "adapter_config.json")):
+        if _local_or_hf_has_file(ckpt_path, "adapter_config.json", ckpt_revision):
             is_peft = True
             print("This is LoRA finetune")
-        elif os.path.exists(os.path.join(ckpt_path, "config.json")):
+        elif _local_or_hf_has_file(ckpt_path, "config.json", ckpt_revision):
             # If it's a full HF checkpoint we should just load directly from it
             model_name_or_path = ckpt_path
             print("This is a full finetune")
@@ -89,48 +121,56 @@ def init_model(model_name_or_path, ckpt_path=None, device=None):
     logger.info(f"Loading tokenizer from {model_name_or_path}")
     print(f"Loading tokenizer from {model_name_or_path}")
     # Force left-padding for decoder-only architectures
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side="left", trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side="left", trust_remote_code=True, revision=ckpt_revision if model_name_or_path == ckpt_path else None)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-        
+
     logger.info(f"Loading model from {model_name_or_path} on {device}")
     print(f"Loading model from {model_name_or_path} on {device}")
     dtype = torch.bfloat16 if torch.cuda.is_available() and device != "cpu" else torch.float16
-    
-    device_map = "auto" if device == "cuda" else { "": device }
-    
+
+    device_map = "auto" if device == "cuda" else {"": device}
+
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
         torch_dtype=dtype,
         device_map=device_map,
-        trust_remote_code=True
+        trust_remote_code=True,
+        revision=ckpt_revision if model_name_or_path == ckpt_path else None,
     )
-    
+
     if ckpt_path and is_peft:
         print(f"Loading PEFT checkpoint weights from {ckpt_path}")
         logger.info(f"Loading PEFT checkpoint weights from {ckpt_path}")
         try:
             from peft import PeftModel
-            model = PeftModel.from_pretrained(model, ckpt_path)
+
+            model = PeftModel.from_pretrained(model, ckpt_path, revision=ckpt_revision)
             model = model.merge_and_unload()
             print("Successfully loaded and merged LoRA weights.")
         except Exception as peft_e:
             print(f"Failed to load as PEFT model: {peft_e}.")
-            
+
     # For full checkpoint manually passed without config.json (rare, just fallback)
     elif ckpt_path and model_name_or_path != ckpt_path:
         print(f"Attempting manual weight loading from {ckpt_path}")
         import safetensors.torch
-        if os.path.exists(os.path.join(ckpt_path, "model.safetensors")):
-            state_dict = safetensors.torch.load_file(os.path.join(ckpt_path, "model.safetensors"))
+
+        safetensor_path = _resolve_ckpt_file(ckpt_path, "model.safetensors", ckpt_revision)
+        bin_path = _resolve_ckpt_file(ckpt_path, "pytorch_model.bin", ckpt_revision)
+
+        if safetensor_path:
+            state_dict = safetensors.torch.load_file(safetensor_path)
             model.load_state_dict(state_dict)
             print("Loaded full model weights from safetensors.")
-        elif os.path.exists(os.path.join(ckpt_path, "pytorch_model.bin")):
-            model.load_state_dict(torch.load(os.path.join(ckpt_path, "pytorch_model.bin"), map_location="cpu"))
+        elif bin_path:
+            model.load_state_dict(torch.load(bin_path, map_location="cpu"))
             print("Loaded full model weights from pytorch_model.bin.")
         else:
-            print(f"Warning: neither adapter_config, config.json, model.safetensors, nor pytorch_model.bin found in {ckpt_path}.")
-            
+            print(
+                f"Warning: neither adapter_config, config.json, model.safetensors, nor pytorch_model.bin found in {ckpt_path}."
+            )
+
     model.eval()
     return tokenizer, model
 
@@ -344,7 +384,7 @@ def main():
 
     db_name = args.db if not is_full_db(args.db) else "full"
 
-    tokenizer, model = init_model(args.model, args.ckpt_path, device=args.device)
+    tokenizer, model = init_model(args.model, args.ckpt_path, args.ckpt_revision, device=args.device)
 
     print(f"Running benchmark={args.benchmark}, db={db_name}, samples={len(subset_test_data)}")
     print(f"Using batch_size={args.batch_size}")
