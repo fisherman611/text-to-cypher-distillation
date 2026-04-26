@@ -431,15 +431,15 @@ def main():
         # Differentiate output file based on whether a custom ckpt was used
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}.json"
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_updated_span_fkl.json"
-    output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_updated_span_rkl_2.json"
+    # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_updated_span_rkl_2.json"
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_updated_span_sfkl.json"
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_csd.json"
-    # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_distillm.json"
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_fdd_sfkl.json"   #default kd_ratio 0.5
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_fdd_srkl.json" 
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_fdd_srkl_updated_1.json" 
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_fdd_srkl_updated_3_0.json" 
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distillm.json" 
+    output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distillm_adaptive_srkl_kd0.7_wrel1.6.json"
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=4, ensure_ascii=False)
 
