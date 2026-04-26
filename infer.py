@@ -3,17 +3,22 @@ import json
 import argparse
 import threading
 import torch
+from urllib.parse import urlparse
 from pathlib import Path
 from time import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from tqdm.auto import tqdm
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from huggingface_hub import hf_hub_download, list_repo_files
+from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
 
-from src.utils import read_json_file, build_messages
+from src.benchmark_data_loader import (
+    DEFAULT_HF_DATASET_REPO,
+    load_benchmark_json,
+)
+from src.utils import build_messages
 from src.llm_services import parse_json_from_string, parse_llm_response
 from src.schema import Nl2CypherSample
 from src.logger_config import setup_logger
@@ -36,6 +41,24 @@ def parse_args():
         help="Benchmark name",
     )
     parser.add_argument(
+        "--data_source",
+        default="auto",
+        choices=["local", "hf", "auto"],
+        help="Where to load benchmark data from",
+    )
+    parser.add_argument(
+        "--hf_dataset_repo",
+        type=str,
+        default=DEFAULT_HF_DATASET_REPO,
+        help="Hugging Face dataset repo id for benchmark files",
+    )
+    parser.add_argument(
+        "--hf_dataset_revision",
+        type=str,
+        default=None,
+        help="Optional revision (branch/tag/commit) for --hf_dataset_repo",
+    )
+    parser.add_argument(
         "--db",
         default=None,
         help='Database name of each benchmark. If omitted or set to "full", use all data.',
@@ -47,7 +70,7 @@ def parse_args():
         "--ckpt_path",
         type=str,
         default=None,
-        help="Local path or Hugging Face repo id of LoRA/full fine-tuned checkpoint",
+        help="Local path, HF repo id, hf:// path, or HF URL of LoRA/full fine-tuned checkpoint",
     )
     parser.add_argument(
         "--ckpt_revision",
@@ -79,27 +102,123 @@ def parse_args():
     parser.add_argument(
         "--limit", type=int, default=None, help="Limit number of test samples"
     )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default=None,
+        help="Output JSON path. If omitted, use the default path pattern in results/<benchmark>/",
+    )
     return parser.parse_args()
 
 
+def _parse_hf_source(source: str, revision: Optional[str] = None) -> Dict[str, Optional[str]]:
+    raw = str(source).strip()
+    normalized = raw.rstrip("/")
+
+    if os.path.isdir(raw):
+        return {
+            "kind": "local",
+            "path": raw,
+            "repo_id": None,
+            "revision": None,
+            "subfolder": None,
+        }
+
+    def _pack_hf(repo_id: str, rev: Optional[str], subfolder: Optional[str]) -> Dict[str, Optional[str]]:
+        return {
+            "kind": "hf",
+            "path": None,
+            "repo_id": repo_id,
+            "revision": rev,
+            "subfolder": subfolder,
+        }
+
+    if normalized.startswith("hf://"):
+        content = normalized[len("hf://"):].strip("/")
+        parts = [p for p in content.split("/") if p]
+        if len(parts) < 2:
+            raise ValueError(
+                f"Invalid HF path '{source}'. Expected: hf://<owner>/<repo>/<optional/subfolder>"
+            )
+        repo_id = f"{parts[0]}/{parts[1]}"
+        subfolder = "/".join(parts[2:]) if len(parts) > 2 else None
+        return _pack_hf(repo_id, revision, subfolder)
+
+    parsed = urlparse(normalized)
+    if parsed.scheme in {"http", "https"} and parsed.netloc in {"huggingface.co", "www.huggingface.co"}:
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) >= 2:
+            repo_id = f"{parts[0]}/{parts[1]}"
+            resolved_revision = revision
+            subfolder = None
+            if len(parts) >= 4 and parts[2] in {"tree", "blob"}:
+                resolved_revision = revision or parts[3]
+                subfolder = "/".join(parts[4:]) if len(parts) > 4 else None
+            elif len(parts) > 2:
+                subfolder = "/".join(parts[2:])
+            return _pack_hf(repo_id, resolved_revision, subfolder)
+
+    shorthand = normalized.strip("/")
+    parts = [p for p in shorthand.split("/") if p]
+    if len(parts) >= 4 and parts[2] in {"tree", "blob"}:
+        repo_id = f"{parts[0]}/{parts[1]}"
+        resolved_revision = revision or parts[3]
+        subfolder = "/".join(parts[4:]) if len(parts) > 4 else None
+        return _pack_hf(repo_id, resolved_revision, subfolder)
+
+    if len(parts) >= 3 and not normalized.startswith(".") and not os.path.exists(raw):
+        repo_id = f"{parts[0]}/{parts[1]}"
+        subfolder = "/".join(parts[2:])
+        return _pack_hf(repo_id, revision, subfolder)
+
+    return _pack_hf(normalized, revision, None)
+
+
+def _materialize_ckpt_source(source: str, revision: Optional[str] = None) -> Tuple[str, Optional[str]]:
+    parsed = _parse_hf_source(source, revision)
+    if parsed["kind"] == "local":
+        return parsed["path"], None  # type: ignore[return-value]
+
+    repo_id = parsed["repo_id"]  # type: ignore[assignment]
+    repo_revision = parsed["revision"]
+    subfolder = parsed["subfolder"]
+
+    if not subfolder:
+        return repo_id, repo_revision  # type: ignore[return-value]
+
+    token = os.getenv("HF_READ_TOKEN") or os.getenv("HF_TOKEN")
+    snapshot_dir = snapshot_download(
+        repo_id=repo_id,  # type: ignore[arg-type]
+        revision=repo_revision,
+        allow_patterns=[f"{subfolder}/*", f"{subfolder}/**"],
+        token=token,
+    )
+    resolved = os.path.join(snapshot_dir, subfolder)
+    return resolved, None
+
+
 def _local_or_hf_has_file(source: str, filename: str, revision: Optional[str] = None) -> bool:
-    if os.path.isdir(source):
-        return os.path.exists(os.path.join(source, filename))
+    resolved_source, resolved_revision = _materialize_ckpt_source(source, revision)
+
+    if os.path.isdir(resolved_source):
+        return os.path.exists(os.path.join(resolved_source, filename))
 
     try:
-        repo_files = list_repo_files(repo_id=source, revision=revision)
+        repo_files = list_repo_files(repo_id=resolved_source, revision=resolved_revision)
         return filename in repo_files
     except Exception:
         return False
 
 
 def _resolve_ckpt_file(source: str, filename: str, revision: Optional[str] = None) -> Optional[str]:
-    if os.path.isdir(source):
-        candidate = os.path.join(source, filename)
+    resolved_source, resolved_revision = _materialize_ckpt_source(source, revision)
+
+    if os.path.isdir(resolved_source):
+        candidate = os.path.join(resolved_source, filename)
         return candidate if os.path.exists(candidate) else None
 
     try:
-        return hf_hub_download(repo_id=source, filename=filename, revision=revision)
+        return hf_hub_download(repo_id=resolved_source, filename=filename, revision=resolved_revision)
     except Exception:
         return None
 
@@ -109,19 +228,28 @@ def init_model(model_name_or_path, ckpt_path=None, ckpt_revision=None, device=No
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     is_peft = False
+    resolved_ckpt_source = ckpt_path
+    resolved_ckpt_revision = ckpt_revision
     if ckpt_path:
         if _local_or_hf_has_file(ckpt_path, "adapter_config.json", ckpt_revision):
             is_peft = True
+            resolved_ckpt_source, resolved_ckpt_revision = _materialize_ckpt_source(ckpt_path, ckpt_revision)
             print("This is LoRA finetune")
         elif _local_or_hf_has_file(ckpt_path, "config.json", ckpt_revision):
             # If it's a full HF checkpoint we should just load directly from it
-            model_name_or_path = ckpt_path
+            resolved_ckpt_source, resolved_ckpt_revision = _materialize_ckpt_source(ckpt_path, ckpt_revision)
+            model_name_or_path = resolved_ckpt_source
             print("This is a full finetune")
 
     logger.info(f"Loading tokenizer from {model_name_or_path}")
     print(f"Loading tokenizer from {model_name_or_path}")
     # Force left-padding for decoder-only architectures
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side="left", trust_remote_code=True, revision=ckpt_revision if model_name_or_path == ckpt_path else None)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name_or_path,
+        padding_side="left",
+        trust_remote_code=True,
+        revision=resolved_ckpt_revision if model_name_or_path == resolved_ckpt_source else None,
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -136,16 +264,16 @@ def init_model(model_name_or_path, ckpt_path=None, ckpt_revision=None, device=No
         torch_dtype=dtype,
         device_map=device_map,
         trust_remote_code=True,
-        revision=ckpt_revision if model_name_or_path == ckpt_path else None,
+        revision=resolved_ckpt_revision if model_name_or_path == resolved_ckpt_source else None,
     )
 
     if ckpt_path and is_peft:
-        print(f"Loading PEFT checkpoint weights from {ckpt_path}")
-        logger.info(f"Loading PEFT checkpoint weights from {ckpt_path}")
+        print(f"Loading PEFT checkpoint weights from {resolved_ckpt_source}")
+        logger.info(f"Loading PEFT checkpoint weights from {resolved_ckpt_source}")
         try:
             from peft import PeftModel
 
-            model = PeftModel.from_pretrained(model, ckpt_path, revision=ckpt_revision)
+            model = PeftModel.from_pretrained(model, resolved_ckpt_source, revision=resolved_ckpt_revision)
             model = model.merge_and_unload()
             print("Successfully loaded and merged LoRA weights.")
         except Exception as peft_e:
@@ -203,24 +331,57 @@ def is_full_db(db: Optional[str]) -> bool:
     return db is None or str(db).strip().lower() in {"full", "all", ""}
 
 
-def load_schema_for_graph(benchmark: str, graph_name: str) -> Optional[str]:
+def _schema_relative_path(benchmark: str, graph_name: str) -> Optional[str]:
     if benchmark == "Cypherbench":
-        schema_path = Path("benchmarks") / benchmark / "graphs" / "schemas" / f"{graph_name}_schema.json"
-    elif benchmark == "Mind_the_query":
-        schema_path = Path("benchmarks") / benchmark / "graphs" / "schemas" / f"{graph_name}.json"
-    else:
+        return f"graphs/schemas/{graph_name}_schema.json"
+    if benchmark == "Mind_the_query":
+        return f"graphs/schemas/{graph_name}.json"
+    return None
+
+
+def load_schema_for_graph(
+    benchmark: str,
+    graph_name: str,
+    data_source: str = "auto",
+    hf_dataset_repo: str = DEFAULT_HF_DATASET_REPO,
+    hf_dataset_revision: Optional[str] = None,
+) -> Optional[str]:
+    schema_relative_path = _schema_relative_path(benchmark, graph_name)
+    if schema_relative_path is None:
         return None
 
-    if not schema_path.exists():
-        logger.warning(f"Schema file not found for graph={graph_name}: {schema_path}")
+    try:
+        schema, schema_source = load_benchmark_json(
+            benchmark=benchmark,
+            relative_path=schema_relative_path,
+            data_source=data_source,
+            hf_dataset_repo=hf_dataset_repo,
+            hf_dataset_revision=hf_dataset_revision,
+        )
+    except Exception as e:
+        logger.warning(f"Schema file not found for graph={graph_name}: {e}")
         return None
 
-    schema = read_json_file(schema_path)
+    logger.info(f"Loaded schema for graph={graph_name} from {schema_source}")
     return json.dumps(schema, indent=4, ensure_ascii=False)
 
 
-def load_schema_and_subset_test_data(benchmark, db=None, limit=None):
-    raw_test_data = read_json_file(Path("benchmarks") / benchmark / "test.json")
+def load_schema_and_subset_test_data(
+    benchmark,
+    db=None,
+    limit=None,
+    data_source: str = "auto",
+    hf_dataset_repo: str = DEFAULT_HF_DATASET_REPO,
+    hf_dataset_revision: Optional[str] = None,
+):
+    raw_test_data, test_source = load_benchmark_json(
+        benchmark=benchmark,
+        relative_path="test.json",
+        data_source=data_source,
+        hf_dataset_repo=hf_dataset_repo,
+        hf_dataset_revision=hf_dataset_revision,
+    )
+    logger.info(f"Loaded test set from {test_source}")
 
     use_all = is_full_db(db)
     subset_test_data = []
@@ -245,9 +406,21 @@ def load_schema_and_subset_test_data(benchmark, db=None, limit=None):
                 {sample.graph for sample in subset_test_data if sample.graph}
             )
             for graph_name in unique_graphs:
-                schema_map[graph_name] = load_schema_for_graph(benchmark, graph_name)
+                schema_map[graph_name] = load_schema_for_graph(
+                    benchmark=benchmark,
+                    graph_name=graph_name,
+                    data_source=data_source,
+                    hf_dataset_repo=hf_dataset_repo,
+                    hf_dataset_revision=hf_dataset_revision,
+                )
         else:
-            shared_schema_str = load_schema_for_graph(benchmark, db)
+            shared_schema_str = load_schema_for_graph(
+                benchmark=benchmark,
+                graph_name=db,
+                data_source=data_source,
+                hf_dataset_repo=hf_dataset_repo,
+                hf_dataset_revision=hf_dataset_revision,
+            )
 
     return subset_test_data, shared_schema_str, schema_map
 
@@ -380,6 +553,9 @@ def main():
         args.benchmark,
         args.db,
         args.limit,
+        args.data_source,
+        args.hf_dataset_repo,
+        args.hf_dataset_revision,
     )
 
     db_name = args.db if not is_full_db(args.db) else "full"
@@ -431,15 +607,20 @@ def main():
         # Differentiate output file based on whether a custom ckpt was used
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}.json"
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_updated_span_fkl.json"
-    output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_updated_span_rkl_2.json"
+    # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_updated_span_rkl_2.json"
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_updated_span_sfkl.json"
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_csd.json"
-    # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_distillm.json"
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_fdd_sfkl.json"   #default kd_ratio 0.5
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_fdd_srkl.json" 
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_fdd_srkl_updated_1.json" 
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_fdd_srkl_updated_3_0.json" 
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distillm.json" 
+    output_path = (
+        Path(args.output_path)
+        if args.output_path
+        else Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distillm_adaptive_srkl_kd0.7_wrel1.6.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=4, ensure_ascii=False)
 

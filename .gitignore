@@ -207,4 +207,8 @@ marimo/_lsp/
 __marimo__/
 upload_to_hf.py
 results.zip
-results/
+results/qwen3/
+benchmarks.zip
+benchmarks/
+logging_data/
+log.txt
