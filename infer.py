@@ -102,6 +102,12 @@ def parse_args():
     parser.add_argument(
         "--limit", type=int, default=None, help="Limit number of test samples"
     )
+    parser.add_argument(
+        "--output_path",
+        type=str,
+        default=None,
+        help="Output JSON path. If omitted, use the default path pattern in results/<benchmark>/",
+    )
     return parser.parse_args()
 
 
@@ -609,7 +615,12 @@ def main():
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_fdd_srkl_updated_1.json" 
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distill_fdd_srkl_updated_3_0.json" 
     # output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distillm.json" 
-    output_path = Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distillm_adaptive_srkl_kd0.7_wrel1.6.json"
+    output_path = (
+        Path(args.output_path)
+        if args.output_path
+        else Path(RESULTS_DIR) / args.benchmark / f"{db_name}_cyphers_result_{args.model.split('/')[-1]}_distillm_adaptive_srkl_kd0.7_wrel1.6.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=4, ensure_ascii=False)
 
