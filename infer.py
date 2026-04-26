@@ -3,15 +3,16 @@ import json
 import argparse
 import threading
 import torch
+from urllib.parse import urlparse
 from pathlib import Path
 from time import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from tqdm.auto import tqdm
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from huggingface_hub import hf_hub_download, list_repo_files
+from huggingface_hub import hf_hub_download, list_repo_files, snapshot_download
 
 from src.benchmark_data_loader import (
     DEFAULT_HF_DATASET_REPO,
@@ -69,7 +70,7 @@ def parse_args():
         "--ckpt_path",
         type=str,
         default=None,
-        help="Local path or Hugging Face repo id of LoRA/full fine-tuned checkpoint",
+        help="Local path, HF repo id, hf:// path, or HF URL of LoRA/full fine-tuned checkpoint",
     )
     parser.add_argument(
         "--ckpt_revision",
@@ -104,24 +105,114 @@ def parse_args():
     return parser.parse_args()
 
 
+def _parse_hf_source(source: str, revision: Optional[str] = None) -> Dict[str, Optional[str]]:
+    raw = str(source).strip()
+    normalized = raw.rstrip("/")
+
+    if os.path.isdir(raw):
+        return {
+            "kind": "local",
+            "path": raw,
+            "repo_id": None,
+            "revision": None,
+            "subfolder": None,
+        }
+
+    def _pack_hf(repo_id: str, rev: Optional[str], subfolder: Optional[str]) -> Dict[str, Optional[str]]:
+        return {
+            "kind": "hf",
+            "path": None,
+            "repo_id": repo_id,
+            "revision": rev,
+            "subfolder": subfolder,
+        }
+
+    if normalized.startswith("hf://"):
+        content = normalized[len("hf://"):].strip("/")
+        parts = [p for p in content.split("/") if p]
+        if len(parts) < 2:
+            raise ValueError(
+                f"Invalid HF path '{source}'. Expected: hf://<owner>/<repo>/<optional/subfolder>"
+            )
+        repo_id = f"{parts[0]}/{parts[1]}"
+        subfolder = "/".join(parts[2:]) if len(parts) > 2 else None
+        return _pack_hf(repo_id, revision, subfolder)
+
+    parsed = urlparse(normalized)
+    if parsed.scheme in {"http", "https"} and parsed.netloc in {"huggingface.co", "www.huggingface.co"}:
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) >= 2:
+            repo_id = f"{parts[0]}/{parts[1]}"
+            resolved_revision = revision
+            subfolder = None
+            if len(parts) >= 4 and parts[2] in {"tree", "blob"}:
+                resolved_revision = revision or parts[3]
+                subfolder = "/".join(parts[4:]) if len(parts) > 4 else None
+            elif len(parts) > 2:
+                subfolder = "/".join(parts[2:])
+            return _pack_hf(repo_id, resolved_revision, subfolder)
+
+    shorthand = normalized.strip("/")
+    parts = [p for p in shorthand.split("/") if p]
+    if len(parts) >= 4 and parts[2] in {"tree", "blob"}:
+        repo_id = f"{parts[0]}/{parts[1]}"
+        resolved_revision = revision or parts[3]
+        subfolder = "/".join(parts[4:]) if len(parts) > 4 else None
+        return _pack_hf(repo_id, resolved_revision, subfolder)
+
+    if len(parts) >= 3 and not normalized.startswith(".") and not os.path.exists(raw):
+        repo_id = f"{parts[0]}/{parts[1]}"
+        subfolder = "/".join(parts[2:])
+        return _pack_hf(repo_id, revision, subfolder)
+
+    return _pack_hf(normalized, revision, None)
+
+
+def _materialize_ckpt_source(source: str, revision: Optional[str] = None) -> Tuple[str, Optional[str]]:
+    parsed = _parse_hf_source(source, revision)
+    if parsed["kind"] == "local":
+        return parsed["path"], None  # type: ignore[return-value]
+
+    repo_id = parsed["repo_id"]  # type: ignore[assignment]
+    repo_revision = parsed["revision"]
+    subfolder = parsed["subfolder"]
+
+    if not subfolder:
+        return repo_id, repo_revision  # type: ignore[return-value]
+
+    token = os.getenv("HF_READ_TOKEN") or os.getenv("HF_TOKEN")
+    snapshot_dir = snapshot_download(
+        repo_id=repo_id,  # type: ignore[arg-type]
+        revision=repo_revision,
+        allow_patterns=[f"{subfolder}/*", f"{subfolder}/**"],
+        token=token,
+    )
+    resolved = os.path.join(snapshot_dir, subfolder)
+    return resolved, None
+
+
 def _local_or_hf_has_file(source: str, filename: str, revision: Optional[str] = None) -> bool:
-    if os.path.isdir(source):
-        return os.path.exists(os.path.join(source, filename))
+    resolved_source, resolved_revision = _materialize_ckpt_source(source, revision)
+
+    if os.path.isdir(resolved_source):
+        return os.path.exists(os.path.join(resolved_source, filename))
 
     try:
-        repo_files = list_repo_files(repo_id=source, revision=revision)
+        repo_files = list_repo_files(repo_id=resolved_source, revision=resolved_revision)
         return filename in repo_files
     except Exception:
         return False
 
 
 def _resolve_ckpt_file(source: str, filename: str, revision: Optional[str] = None) -> Optional[str]:
-    if os.path.isdir(source):
-        candidate = os.path.join(source, filename)
+    resolved_source, resolved_revision = _materialize_ckpt_source(source, revision)
+
+    if os.path.isdir(resolved_source):
+        candidate = os.path.join(resolved_source, filename)
         return candidate if os.path.exists(candidate) else None
 
     try:
-        return hf_hub_download(repo_id=source, filename=filename, revision=revision)
+        return hf_hub_download(repo_id=resolved_source, filename=filename, revision=resolved_revision)
     except Exception:
         return None
 
@@ -131,19 +222,28 @@ def init_model(model_name_or_path, ckpt_path=None, ckpt_revision=None, device=No
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     is_peft = False
+    resolved_ckpt_source = ckpt_path
+    resolved_ckpt_revision = ckpt_revision
     if ckpt_path:
         if _local_or_hf_has_file(ckpt_path, "adapter_config.json", ckpt_revision):
             is_peft = True
+            resolved_ckpt_source, resolved_ckpt_revision = _materialize_ckpt_source(ckpt_path, ckpt_revision)
             print("This is LoRA finetune")
         elif _local_or_hf_has_file(ckpt_path, "config.json", ckpt_revision):
             # If it's a full HF checkpoint we should just load directly from it
-            model_name_or_path = ckpt_path
+            resolved_ckpt_source, resolved_ckpt_revision = _materialize_ckpt_source(ckpt_path, ckpt_revision)
+            model_name_or_path = resolved_ckpt_source
             print("This is a full finetune")
 
     logger.info(f"Loading tokenizer from {model_name_or_path}")
     print(f"Loading tokenizer from {model_name_or_path}")
     # Force left-padding for decoder-only architectures
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, padding_side="left", trust_remote_code=True, revision=ckpt_revision if model_name_or_path == ckpt_path else None)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name_or_path,
+        padding_side="left",
+        trust_remote_code=True,
+        revision=resolved_ckpt_revision if model_name_or_path == resolved_ckpt_source else None,
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -158,16 +258,16 @@ def init_model(model_name_or_path, ckpt_path=None, ckpt_revision=None, device=No
         torch_dtype=dtype,
         device_map=device_map,
         trust_remote_code=True,
-        revision=ckpt_revision if model_name_or_path == ckpt_path else None,
+        revision=resolved_ckpt_revision if model_name_or_path == resolved_ckpt_source else None,
     )
 
     if ckpt_path and is_peft:
-        print(f"Loading PEFT checkpoint weights from {ckpt_path}")
-        logger.info(f"Loading PEFT checkpoint weights from {ckpt_path}")
+        print(f"Loading PEFT checkpoint weights from {resolved_ckpt_source}")
+        logger.info(f"Loading PEFT checkpoint weights from {resolved_ckpt_source}")
         try:
             from peft import PeftModel
 
-            model = PeftModel.from_pretrained(model, ckpt_path, revision=ckpt_revision)
+            model = PeftModel.from_pretrained(model, resolved_ckpt_source, revision=resolved_ckpt_revision)
             model = model.merge_and_unload()
             print("Successfully loaded and merged LoRA weights.")
         except Exception as peft_e:
