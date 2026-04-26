@@ -15,7 +15,7 @@ BASE_RESULTS_DIR="${BASE_RESULTS_DIR:-results/Neo4j_Text2Cypher}"
 MODE="parallel"
 GPU_LIST="0,1"
 GPUS_PER_JOB=1
-EXPERIMENTS="rkl,distillm,csd,sfkl,fkl"
+EXPERIMENTS="rkl,distillm,csd,sfkl,fkl,adaptive_srkl_kd0.6_wrel0.5"
 MAX_RETRIES=0
 CONTINUE_ON_ERROR=0
 DRY_RUN=0
@@ -57,7 +57,7 @@ Options:
   --mode <parallel|sequential>   Queue jobs by GPU chunks or run one-by-one. Default: parallel
   --gpus <list>                  Comma-separated GPU ids. Default: 0,1
   --gpus-per-job <n>             GPUs used by each experiment. Default: 1
-  --experiments <list>           Comma-separated presets: rkl,distillm,csd,sfkl,fkl
+  --experiments <list>           Comma-separated presets: rkl,distillm,csd,sfkl,fkl,adaptive_srkl_kd0.6_wrel0.5
   --max-retries <n>              Retry failed experiments up to n times. Default: 0
   --log-dir <path>               Log directory. Default: ./run_logs/neo4j_text2cypher_<timestamp>
   --continue-on-error            Keep scheduling after retries are exhausted.
@@ -155,6 +155,9 @@ experiment_tag() {
     fkl)
       printf '%s' "distill_fkl"
       ;;
+    adaptive_srkl_kd0.6_wrel0.5)
+      printf '%s' "distillm_adaptive_srkl_kd0.6_wrel0.5"
+      ;;
     *)
       return 1
       ;;
@@ -168,16 +171,19 @@ experiment_ckpt() {
       printf '%s' "https://huggingface.co/fisherman611/text-to-cypher-baselines/tree/main/distillm_0.6B_4B_Cypherbench_rkl/1065"
       ;;
     distillm)
-      printf '%s' "https://huggingface.co/fisherman611/text-to-cypher-baselines/tree/main/distillm_0.6B_4B_Cypherbench_distillm/1065"
+      printf '%s' "https://huggingface.co/fisherman611/text-to-cypher-baselines/distillm_0.6B_4B_Cypherbench_distillm/1065"
       ;;
     csd)
-      printf '%s' "https://huggingface.co/fisherman611/text-to-cypher-baselines/tree/main/distillm_0.6B_4B_Cypherbench_csd/1065"
+      printf '%s' "https://huggingface.co/fisherman611/text-to-cypher-baselines/distillm_0.6B_4B_Cypherbench_csd/1065"
       ;;
     sfkl)
-      printf '%s' "https://huggingface.co/fisherman611/text-to-cypher-baselines/tree/main/distillm_0.6B_4B_Cypherbench_sfkl/1065"
+      printf '%s' "https://huggingface.co/fisherman611/text-to-cypher-baselines/distillm_0.6B_4B_Cypherbench_sfkl/1065"
       ;;
     fkl)
-      printf '%s' "https://huggingface.co/fisherman611/text-to-cypher-baselines/tree/main/distillm_0.6B_4B_Cypherbench_fkl/1065"
+      printf '%s' "https://huggingface.co/fisherman611/text-to-cypher-baselines/distillm_0.6B_4B_Cypherbench_fkl/1065"
+      ;;
+    adaptive_srkl_kd0.6_wrel0.5)
+      printf '%s' "https://huggingface.co/fisherman611/text-to-cypher-models/distillm_new_train_0.6B_4B_adaptive_srkl_kd0.6_wrel0.5/2130"
       ;;
     *)
       return 1
@@ -192,7 +198,7 @@ for exp in "${EXP_RAW[@]}"; do
   [[ -z "${exp_trimmed}" ]] && continue
 
   if ! experiment_tag "${exp_trimmed}" > /dev/null; then
-    echo "Unsupported experiment: ${exp_trimmed}. Supported: rkl, distillm, csd, sfkl, fkl" >&2
+    echo "Unsupported experiment: ${exp_trimmed}. Supported: rkl, distillm, csd, sfkl, fkl, adaptive_srkl_kd0.6_wrel0.5" >&2
     exit 1
   fi
   EXP_LIST+=("${exp_trimmed}")
