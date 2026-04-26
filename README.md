@@ -164,5 +164,5 @@ Trong đó thường có:
 uv sync
 source .venv/bin/activate
 bash running.sh --filter distillm
-bash running.sh --filter distillm_new_3
+bash running_2.sh --filter distillm_new_3
 ```
