@@ -13,7 +13,11 @@ from tqdm.auto import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from huggingface_hub import hf_hub_download, list_repo_files
 
-from src.utils import read_json_file, build_messages
+from src.benchmark_data_loader import (
+    DEFAULT_HF_DATASET_REPO,
+    load_benchmark_json,
+)
+from src.utils import build_messages
 from src.llm_services import parse_json_from_string, parse_llm_response
 from src.schema import Nl2CypherSample
 from src.logger_config import setup_logger
@@ -34,6 +38,24 @@ def parse_args():
         default="Cypherbench",
         choices=["Cypherbench", "Mind_the_query", "Neo4j_Text2Cypher"],
         help="Benchmark name",
+    )
+    parser.add_argument(
+        "--data_source",
+        default="auto",
+        choices=["local", "hf", "auto"],
+        help="Where to load benchmark data from",
+    )
+    parser.add_argument(
+        "--hf_dataset_repo",
+        type=str,
+        default=DEFAULT_HF_DATASET_REPO,
+        help="Hugging Face dataset repo id for benchmark files",
+    )
+    parser.add_argument(
+        "--hf_dataset_revision",
+        type=str,
+        default=None,
+        help="Optional revision (branch/tag/commit) for --hf_dataset_repo",
     )
     parser.add_argument(
         "--db",
@@ -203,24 +225,57 @@ def is_full_db(db: Optional[str]) -> bool:
     return db is None or str(db).strip().lower() in {"full", "all", ""}
 
 
-def load_schema_for_graph(benchmark: str, graph_name: str) -> Optional[str]:
+def _schema_relative_path(benchmark: str, graph_name: str) -> Optional[str]:
     if benchmark == "Cypherbench":
-        schema_path = Path("benchmarks") / benchmark / "graphs" / "schemas" / f"{graph_name}_schema.json"
-    elif benchmark == "Mind_the_query":
-        schema_path = Path("benchmarks") / benchmark / "graphs" / "schemas" / f"{graph_name}.json"
-    else:
+        return f"graphs/schemas/{graph_name}_schema.json"
+    if benchmark == "Mind_the_query":
+        return f"graphs/schemas/{graph_name}.json"
+    return None
+
+
+def load_schema_for_graph(
+    benchmark: str,
+    graph_name: str,
+    data_source: str = "auto",
+    hf_dataset_repo: str = DEFAULT_HF_DATASET_REPO,
+    hf_dataset_revision: Optional[str] = None,
+) -> Optional[str]:
+    schema_relative_path = _schema_relative_path(benchmark, graph_name)
+    if schema_relative_path is None:
         return None
 
-    if not schema_path.exists():
-        logger.warning(f"Schema file not found for graph={graph_name}: {schema_path}")
+    try:
+        schema, schema_source = load_benchmark_json(
+            benchmark=benchmark,
+            relative_path=schema_relative_path,
+            data_source=data_source,
+            hf_dataset_repo=hf_dataset_repo,
+            hf_dataset_revision=hf_dataset_revision,
+        )
+    except Exception as e:
+        logger.warning(f"Schema file not found for graph={graph_name}: {e}")
         return None
 
-    schema = read_json_file(schema_path)
+    logger.info(f"Loaded schema for graph={graph_name} from {schema_source}")
     return json.dumps(schema, indent=4, ensure_ascii=False)
 
 
-def load_schema_and_subset_test_data(benchmark, db=None, limit=None):
-    raw_test_data = read_json_file(Path("benchmarks") / benchmark / "test.json")
+def load_schema_and_subset_test_data(
+    benchmark,
+    db=None,
+    limit=None,
+    data_source: str = "auto",
+    hf_dataset_repo: str = DEFAULT_HF_DATASET_REPO,
+    hf_dataset_revision: Optional[str] = None,
+):
+    raw_test_data, test_source = load_benchmark_json(
+        benchmark=benchmark,
+        relative_path="test.json",
+        data_source=data_source,
+        hf_dataset_repo=hf_dataset_repo,
+        hf_dataset_revision=hf_dataset_revision,
+    )
+    logger.info(f"Loaded test set from {test_source}")
 
     use_all = is_full_db(db)
     subset_test_data = []
@@ -245,9 +300,21 @@ def load_schema_and_subset_test_data(benchmark, db=None, limit=None):
                 {sample.graph for sample in subset_test_data if sample.graph}
             )
             for graph_name in unique_graphs:
-                schema_map[graph_name] = load_schema_for_graph(benchmark, graph_name)
+                schema_map[graph_name] = load_schema_for_graph(
+                    benchmark=benchmark,
+                    graph_name=graph_name,
+                    data_source=data_source,
+                    hf_dataset_repo=hf_dataset_repo,
+                    hf_dataset_revision=hf_dataset_revision,
+                )
         else:
-            shared_schema_str = load_schema_for_graph(benchmark, db)
+            shared_schema_str = load_schema_for_graph(
+                benchmark=benchmark,
+                graph_name=db,
+                data_source=data_source,
+                hf_dataset_repo=hf_dataset_repo,
+                hf_dataset_revision=hf_dataset_revision,
+            )
 
     return subset_test_data, shared_schema_str, schema_map
 
@@ -380,6 +447,9 @@ def main():
         args.benchmark,
         args.db,
         args.limit,
+        args.data_source,
+        args.hf_dataset_repo,
+        args.hf_dataset_revision,
     )
 
     db_name = args.db if not is_full_db(args.db) else "full"

@@ -14,6 +14,10 @@ from time import time, sleep
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
+from src.benchmark_data_loader import (
+    DEFAULT_HF_DATASET_REPO,
+    load_benchmark_json,
+)
 from src.schema import Nl2CypherSample
 from src.logger_config import setup_logger
 
@@ -500,6 +504,22 @@ def run_parallel_pipeline(
 def main():
     parser = argparse.ArgumentParser(description="Baseline LLM Generator for Cypherbench")
     parser.add_argument("--benchmark", default="Cypherbench")
+    parser.add_argument(
+        "--data_source",
+        default="auto",
+        choices=["local", "hf", "auto"],
+        help="Where to load benchmark data from",
+    )
+    parser.add_argument(
+        "--hf_dataset_repo",
+        default=DEFAULT_HF_DATASET_REPO,
+        help="Hugging Face dataset repo id for benchmark files",
+    )
+    parser.add_argument(
+        "--hf_dataset_revision",
+        default=None,
+        help="Optional revision (branch/tag/commit) for --hf_dataset_repo",
+    )
     parser.add_argument("--model", "-m", required=True, help="Model key or alias (e.g. qwen7b, deepseek)")
     parser.add_argument("--graphs", "-g", nargs="+", default=["company", "fictional_character", "flight_accident", "geography", "movie", "nba", "politics"], help="Subset of graphs to run")
     parser.add_argument("--max_workers", type=int, default=4, help="Max workers for parallel generating")
@@ -520,17 +540,19 @@ def main():
 
     client = build_openai_client()
 
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    test_json_path = os.path.join(base_dir, "text2cypher_distillation_draft","benchmarks", args.benchmark, "test.json")
-    schema_dir = os.path.join(base_dir, "text2cypher_distillation_draft", "benchmarks", args.benchmark, "graphs", "schemas")
-
-    if not os.path.exists(test_json_path):
-        logger.error(f"Test data not found: {test_json_path}")
+    try:
+        all_test_data, test_source = load_benchmark_json(
+            benchmark=args.benchmark,
+            relative_path="test.json",
+            data_source=args.data_source,
+            hf_dataset_repo=args.hf_dataset_repo,
+            hf_dataset_revision=args.hf_dataset_revision,
+        )
+    except Exception as e:
+        logger.error(f"Failed to load test.json: {e}")
         return
 
-    with open(test_json_path, 'r', encoding='utf-8') as f:
-        all_test_data = json.load(f)
-        
+    logger.info(f"Loaded test set from {test_source}")
     os.makedirs(args.output_dir, exist_ok=True)
 
     for graph in args.graphs:
@@ -541,14 +563,27 @@ def main():
         if not graph_data:
             logger.warning(f"No test samples found for graph '{graph}'.")
             continue
-            
-        schema_path = os.path.join(schema_dir, f"{graph}_schema.json")
-        if not os.path.exists(schema_path):
-             logger.warning(f"Schema not found at {schema_path}.")
-             continue
-             
-        with open(schema_path, "r", encoding="utf-8") as f:
-             schema = json.load(f)
+
+        if args.benchmark == "Cypherbench":
+            schema_relative_path = f"graphs/schemas/{graph}_schema.json"
+        elif args.benchmark == "Mind_the_query":
+            schema_relative_path = f"graphs/schemas/{graph}.json"
+        else:
+            logger.warning(f"Schema loading is not configured for benchmark '{args.benchmark}'.")
+            continue
+
+        try:
+            schema, schema_source = load_benchmark_json(
+                benchmark=args.benchmark,
+                relative_path=schema_relative_path,
+                data_source=args.data_source,
+                hf_dataset_repo=args.hf_dataset_repo,
+                hf_dataset_revision=args.hf_dataset_revision,
+            )
+            logger.info(f"Loaded schema for '{graph}' from {schema_source}")
+        except Exception as e:
+            logger.warning(f"Schema not found for graph '{graph}': {e}")
+            continue
 
         results = run_parallel_pipeline(
             test_data=graph_data,
