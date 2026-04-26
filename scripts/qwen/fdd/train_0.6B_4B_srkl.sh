@@ -1,4 +1,4 @@
-#! /bin/bash
+﻿#! /bin/bash
 
 GPUS=(0 1)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
@@ -18,11 +18,11 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
 # model
 BASE_PATH=.
 CKPT_NAME="qwen3-0.6B"
-CKPT="Qwen/Qwen3-0.6B"
+CKPT="${CKPT:-Qwen/Qwen3-0.6B}"
 TEACHER_CKPT_NAME="qwen3-4B"
-TEACHER_CKPT="Qwen/Qwen3-4B-Instruct-2507"
+TEACHER_CKPT="${TEACHER_CKPT:-Qwen/Qwen3-4B-Instruct-2507}"
 # data
-DATA_DIR="${BASE_PATH}/processed_data/benchmarks/Cypherbench/qwen/"
+DATA_DIR="${DATA_DIR:-hf://fisherman611/text_to_cypher_distillation/benchmarks/Cypherbench/qwen}"
 # hp
 BATCH_SIZE=2
 LR=0.0001
@@ -46,7 +46,7 @@ OPTS+=" --teacher-model-path ${TEACHER_CKPT}"
 OPTS+=" --ckpt-name ${CKPT_NAME}"
 OPTS+=" --teacher-ckpt-name ${TEACHER_CKPT_NAME}"
 OPTS+=" --teacher-model-fp16"
-OPTS+=" --teacher-peft-path results/qwen3/sft_4B/e5-bs2-lr1e-05-G8-N2-NN1-lora-32-64-0.1/1065"
+OPTS+=" --teacher-peft-path ${TEACHER_PEFT_PATH:-hf://fisherman611/text-to-cypher-models/e5-bs2-lr1e-05-G8-N2-NN1-lora-32-64-0.1/1065}"
 OPTS+=" --model-type qwen"
 OPTS+=" --n-gpu ${GPUS_PER_NODE}"
 # data

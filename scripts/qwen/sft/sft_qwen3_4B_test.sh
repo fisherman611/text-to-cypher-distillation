@@ -1,10 +1,10 @@
 #! /bin/bash
 
-# ── GPU config (1 GPU) ────────────────────────────────────────────────────────
+# GPU config (1 GPU)
 GPUS=(1)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 
-# ── Distributed args ──────────────────────────────────────────────────────────
+# Distributed args
 MASTER_ADDR=localhost
 MASTER_PORT=66$(($RANDOM%90+10))
 NNODES=1
@@ -17,28 +17,25 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
                   --master_addr $MASTER_ADDR \
                   --master_port $MASTER_PORT"
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-# open-ed/ is the package root (finetune.py lives there and imports from it)
+# Paths
 BASE_PATH=.
+DATA_DIR="${DATA_DIR:-hf://fisherman611/text_to_cypher_distillation/benchmarks/Cypherbench/qwen}"
 
-# Data lives outside open-ed, relative to the project root
-DATA_DIR="processed_data/benchmarks/Cypherbench/qwen/"
-
-# ── Model ─────────────────────────────────────────────────────────────────────
+# Model
 CKPT_NAME="qwen3-4B"
-CKPT="Qwen/Qwen3-4B-Instruct-2507"
+CKPT="${CKPT:-Qwen/Qwen3-4B-Instruct-2507}"
 
-# ── Hyper-parameters ──────────────────────────────────────────────────────────
+# Hyper-parameters
 BATCH_SIZE=1
 LR=0.00001
 GRAD_ACC=1
 EVAL_BATCH_SIZE=1
 EPOCHS=1
 
-# ── Length ────────────────────────────────────────────────────────────────────
+# Length
 MAX_LENGTH=797
 
-# ── Runtime ───────────────────────────────────────────────────────────────────
+# Runtime
 SAVE_PATH="${BASE_PATH}/results/qwen3/sft_4B"
 SEED=42
 
@@ -50,7 +47,7 @@ OPTS+=" --model-path ${CKPT}"
 OPTS+=" --ckpt-name ${CKPT_NAME}"
 OPTS+=" --model-type qwen"
 OPTS+=" --n-gpu ${GPUS_PER_NODE}"
-OPTS+=" --gradient-checkpointing"     # saves VRAM on a single GPU
+OPTS+=" --gradient-checkpointing"
 # data
 OPTS+=" --data-dir ${DATA_DIR}"
 OPTS+=" --num-workers 0"
@@ -102,7 +99,6 @@ OPTS+=" --temperature 0.5"
 export NCCL_DEBUG=""
 export WANDB_DISABLED=True
 export TF_CPP_MIN_LOG_LEVEL=3
-# finetune.py imports modules relative to open-ed/ (arguments, data_utils, utils, …)
 export PYTHONPATH=${BASE_PATH}
 
 CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/finetune.py ${OPTS} $@"
@@ -111,3 +107,4 @@ echo "${CMD}"
 echo "PYTHONPATH=${PYTHONPATH}"
 mkdir -p "${SAVE_PATH}"
 ${CMD}
+
