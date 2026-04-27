@@ -32,7 +32,7 @@ EPOCHS=5
 # length
 MAX_LENGTH=892
 # runtime
-SAVE_PATH="${BASE_PATH}/results/qwen3/distillm_0.6B_4B_Cypherbench_sfkl"
+SAVE_PATH="${BASE_PATH}/results/qwen3/distillm_0.6B_4B_Cypherbench_sfkl_kd0.6"
 # seed
 SEED=42
 
@@ -62,7 +62,7 @@ OPTS+=" --lr-decay-style cosine"
 OPTS+=" --weight-decay 1e-2"
 OPTS+=" --clip-grad 1.0"
 OPTS+=" --epochs ${EPOCHS}"
-OPTS+=" --kd-ratio 0.7"
+OPTS+=" --kd-ratio 0.6"
 # length
 OPTS+=" --max-length ${MAX_LENGTH}"
 OPTS+=" --max-prompt-length 797"
