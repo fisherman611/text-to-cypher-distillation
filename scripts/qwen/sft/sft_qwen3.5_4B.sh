@@ -1,7 +1,7 @@
 #! /bin/bash
 
 # GPU config (1 GPU)
-GPUS=(0)
+GPUS=(1)
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 
 # Distributed args
