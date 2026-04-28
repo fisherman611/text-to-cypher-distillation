@@ -1,12 +1,13 @@
 #! /bin/bash
 
 # GPU config (1 GPU)
-GPUS=(1)
-export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
+RUN_GPUS="${RUN_GPUS:-1}"
+IFS=',' read -r -a GPUS <<< "${RUN_GPUS}"
+export CUDA_VISIBLE_DEVICES="${RUN_GPUS}"
 
 # Distributed args
 MASTER_ADDR=localhost
-MASTER_PORT=66$(($RANDOM%90+10))
+MASTER_PORT="${RUN_MASTER_PORT:-66$(($RANDOM%90+10))}"
 NNODES=1
 NODE_RANK=0
 GPUS_PER_NODE=${#GPUS[@]}
