@@ -1,12 +1,14 @@
 #! /bin/bash
 
-# GPU config (1 GPU)
-GPUS=(0)
+if [[ -n "${RUN_GPUS:-}" ]]; then
+  IFS=', ' read -r -a GPUS <<< "${RUN_GPUS}"
+else
+  GPUS=(1)
+fi
 export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 
-# Distributed args
 MASTER_ADDR=localhost
-MASTER_PORT=66$(($RANDOM%90+10))
+MASTER_PORT=${RUN_MASTER_PORT:-66$(($RANDOM%90+10))}
 NNODES=1
 NODE_RANK=0
 GPUS_PER_NODE=${#GPUS[@]}
@@ -21,22 +23,22 @@ DISTRIBUTED_ARGS="--nproc_per_node $GPUS_PER_NODE \
 BASE_PATH=.
 DATA_DIR="${DATA_DIR:-hf://fisherman611/text_to_cypher_distillation/benchmarks/Cypherbench/qwen}"
 
-# Model
-CKPT_NAME="qwen3-0.6B"
-CKPT="${CKPT:-Qwen/Qwen3-0.6B}"
+# Model (override CKPT if your exact HF id differs)
+CKPT_NAME="qwen3.5-4B"
+CKPT="${CKPT:-Qwen/Qwen3.5-4B}"
 
 # Hyper-parameters
-BATCH_SIZE=4
-LR=0.00005
-GRAD_ACC=4
-EVAL_BATCH_SIZE=16
+BATCH_SIZE=2
+LR=0.00001
+GRAD_ACC=8
+EVAL_BATCH_SIZE=8
 EPOCHS=5
 
 # Length
-MAX_LENGTH=1024
+MAX_LENGTH=892
 
 # Runtime
-SAVE_PATH="${BASE_PATH}/results/qwen3/sft_0.6B"
+SAVE_PATH="${BASE_PATH}/results/qwen3.5/sft_4B"
 SEED=42
 
 
@@ -78,6 +80,11 @@ OPTS+=" --mid-log-num -1"
 OPTS+=" --save ${SAVE_PATH}"
 # seed
 OPTS+=" --seed ${SEED}"
+# lora
+OPTS+=" --peft lora"
+OPTS+=" --peft-lora-r 32"
+OPTS+=" --peft-lora-alpha 64"
+OPTS+=" --peft-lora-dropout 0.1"
 # deepspeed
 OPTS+=" --deepspeed"
 OPTS+=" --deepspeed_config ${BASE_PATH}/configs/deepspeed/ds_config_fp16.json"
@@ -95,9 +102,9 @@ export WANDB_DISABLED=True
 export TF_CPP_MIN_LOG_LEVEL=3
 export PYTHONPATH=${BASE_PATH}
 
-CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/finetune.py ${OPTS} $@"
+CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/finetune_qwen3.5.py ${OPTS} $@"
 
-echo "${CMD}"
+echo ${CMD}
 echo "PYTHONPATH=${PYTHONPATH}"
-mkdir -p "${SAVE_PATH}"
-${CMD}
+mkdir -p ${SAVE_PATH}
+CODE_BASE=HF ${CMD}
