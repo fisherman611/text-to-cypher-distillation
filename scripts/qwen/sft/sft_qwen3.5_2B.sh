@@ -23,7 +23,7 @@ DATA_DIR="${DATA_DIR:-hf://fisherman611/text_to_cypher_distillation/benchmarks/C
 
 # Model (override CKPT if your exact HF id differs)
 CKPT_NAME="qwen3.5-2B"
-CKPT="${CKPT:-Qwen/Qwen3.5-2B-Instruct}"
+CKPT="${CKPT:-Qwen/Qwen3.5-2B}"
 
 # Hyper-parameters
 BATCH_SIZE=4
@@ -81,7 +81,7 @@ OPTS+=" --seed ${SEED}"
 # student 2B: full finetune (no LoRA)
 # deepspeed
 OPTS+=" --deepspeed"
-OPTS+=" --deepspeed_config ${BASE_PATH}/configs/deepspeed/ds_config_bf16.json"
+OPTS+=" --deepspeed_config ${BASE_PATH}/configs/deepspeed/ds_config_fp16.json"
 # type
 OPTS+=" --type lm"
 # generation
