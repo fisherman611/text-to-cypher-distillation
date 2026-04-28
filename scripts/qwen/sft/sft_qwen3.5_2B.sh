@@ -1,13 +1,14 @@
 #! /bin/bash
 
-# GPU config (1 GPU)
-RUN_GPUS="${RUN_GPUS:-0}"
-IFS=',' read -r -a GPUS <<< "${RUN_GPUS}"
-export CUDA_VISIBLE_DEVICES="${RUN_GPUS}"
+if [[ -n "${RUN_GPUS:-}" ]]; then
+  IFS=', ' read -r -a GPUS <<< "${RUN_GPUS}"
+else
+  GPUS=(0)
+fi
+export CUDA_VISIBLE_DEVICES=$(IFS=,; echo "${GPUS[*]}")
 
-# Distributed args
 MASTER_ADDR=localhost
-MASTER_PORT="${RUN_MASTER_PORT:-66$(($RANDOM%90+10))}"
+MASTER_PORT=${RUN_MASTER_PORT:-66$(($RANDOM%90+10))}
 NNODES=1
 NODE_RANK=0
 GPUS_PER_NODE=${#GPUS[@]}
@@ -99,7 +100,7 @@ export PYTHONPATH=${BASE_PATH}
 
 CMD="torchrun ${DISTRIBUTED_ARGS} ${BASE_PATH}/finetune_qwen3.5.py ${OPTS} $@"
 
-echo "${CMD}"
+echo ${CMD}
 echo "PYTHONPATH=${PYTHONPATH}"
-mkdir -p "${SAVE_PATH}"
-${CMD}
+mkdir -p ${SAVE_PATH}
+CODE_BASE=HF ${CMD}
