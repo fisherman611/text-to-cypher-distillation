@@ -40,6 +40,7 @@ MAX_LENGTH=1024
 # Runtime
 SAVE_PATH="${BASE_PATH}/results/qwen3.5/sft_2B"
 SEED=42
+DS_CONFIG_PATH="${DEEPSPEED_CONFIG:-${BASE_PATH}/configs/deepspeed/ds_config_bf16.json}"
 
 
 OPTS=""
@@ -83,7 +84,7 @@ OPTS+=" --seed ${SEED}"
 # student 2B: full finetune (no LoRA)
 # deepspeed
 OPTS+=" --deepspeed"
-OPTS+=" --deepspeed_config ${BASE_PATH}/configs/deepspeed/ds_config_fp16.json"
+OPTS+=" --deepspeed_config ${DS_CONFIG_PATH}"
 # type
 OPTS+=" --type lm"
 # generation

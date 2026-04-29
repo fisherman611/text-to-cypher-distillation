@@ -40,6 +40,7 @@ MAX_LENGTH=892
 # Runtime
 SAVE_PATH="${BASE_PATH}/results/qwen3.5/sft_4B"
 SEED=42
+DS_CONFIG_PATH="${DEEPSPEED_CONFIG:-${BASE_PATH}/configs/deepspeed/ds_config_bf16.json}"
 
 
 OPTS=""
@@ -87,7 +88,7 @@ OPTS+=" --peft-lora-alpha 64"
 OPTS+=" --peft-lora-dropout 0.1"
 # deepspeed
 OPTS+=" --deepspeed"
-OPTS+=" --deepspeed_config ${BASE_PATH}/configs/deepspeed/ds_config_fp16.json"
+OPTS+=" --deepspeed_config ${DS_CONFIG_PATH}"
 # type
 OPTS+=" --type lm"
 # generation
