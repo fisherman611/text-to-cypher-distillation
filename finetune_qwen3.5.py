@@ -37,7 +37,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 
 from arguments import get_args
 
-from data_utils.lm_datasets import LMTrainDataset
+from data_utils.lm_datasets_2 import LMTrainDataset
 from data_utils.data_utils import LLMDataset
 from utils import get_optimizer_params, get_optimizer_params_peft, print_args, initialize
 from utils import print_rank, get_rank
